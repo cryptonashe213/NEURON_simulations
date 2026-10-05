@@ -1,0 +1,515 @@
+// ============================================================
+// 2cells_sinc_IClamp_CA1.hoc
+// ------------------------------------------------------------
+// VERSION SIN BLOQUEO DE CANALES + OPTIMIZACIONES TEMPORALES
+//
+// IClamp continuo en el SOMA de cada celula, con retardo Idel
+// entre el inicio de ambas. Inhibicion mutua perisomatica.
+// Pipeline (run_sim_clean, calc_corr_2_N, calc_phase, calc_corr,
+// phase_diagram_compare) IDENTICO al modelo simple.
+//
+// Tiempo estimado del barrido: ~10-12 horas.
+// ============================================================
+load_file("stdrun.hoc")
+load_file("nrngui.hoc")
+cvode_active(1)
+nrn_load_dll("mechanisms/hippocampus/mod/nrnmech.dll")
+load_file("electrophysiology/CA1_int_cNAC_970717D_2019030718251.hoc")
+// ============================================================
+// PARAMETROS GLOBALES
+// ============================================================
+N        = 2
+iamp     = 1.06
+iampfact = 1
+wi       = 1e-4
+Idel     = 30
+t_therm  = 200
+celsius  = 34
+PI       = 3.14159265358979
+cell_dx  = 500
+// ============================================================
+// OBJETOS GLOBALES
+// ============================================================
+objref fv, corr_out
+objref NC[N]
+objref syni[N], nci[N], ic[N]
+objref phi[N]
+objref ispk, tspkprec, tspknext, ph
+objref spike_times[N], spike_rec[N], vvec[N], tvec
+objref nullobj
+strdef new_file
+fv = new File()
+// ============================================================
+// CREACION DE LAS DOS CELULAS BBP
+// ============================================================
+for j = 0, N-1 {
+    NC[j] = new CA1_int_cNAC_970717D_2019030718251( \
+        j, "morphology", \
+        "060314AM2_-_Scale_x1.000_y0.900_z1.000_-_Clone_0.swc")
+}
+for j = 1, N-1 {
+    forsec NC[j].all {
+        for i = 0, n3d() - 1 {
+            pt3dchange(i, x3d(i) + j*cell_dx, y3d(i), z3d(i), diam3d(i))
+        }
+    }
+}
+print "============================================="
+print "  Dos celulas CA1 BBP creadas (interneuronas) - modo IClamp"
+print "  Soma:    ", NC[0].nSecSoma
+print "  Apical:  ", NC[0].nSecApical
+print "  Basal:   ", NC[0].nSecBasal
+print "  Axonal:  ", NC[0].nSecAxonal
+print "  Celula 1 desplazada en X:", cell_dx, " um"
+print "  TODOS LOS CANALES ACTIVOS (sin bloqueo)"
+print "============================================="
+// ============================================================
+// INICIALIZACION DE SINAPSIS Y REGISTRO POR CELULA
+// ============================================================
+for k = 0, N-1 {
+    NC[k].soma {
+        syni[k]     = new ExpSyn(0.5)
+        syni[k].tau = 30
+        syni[k].e   = -80
+        ic[k]     = new IClamp(0.5)
+        ic[k].amp = 0
+        ic[k].dur = 0
+        ic[k].del = 0
+        spike_times[k] = new Vector()
+        spike_rec[k]   = new NetCon(&v(0.5), nullobj, 0, 0, 0)
+        spike_rec[k].record(spike_times[k])
+    }
+}
+NC[0].soma nci[0] = new NetCon(&v(.5), syni[1], 0, 0, wi)
+NC[1].soma nci[1] = new NetCon(&v(.5), syni[0], 0, 0, wi)
+print "Cableado: inhibicion mutua perisomatica, IClamp continuo en el soma"
+// ============================================================
+// advance()
+// ============================================================
+proc advance() {
+    fadvance()
+    if (fv.isopen()) {
+        fv.printf("%g %g %g\n", t, NC[0].soma.v(0.5), NC[1].soma.v(0.5))
+    }
+}
+// ============================================================
+// run_sim_clean()
+// ============================================================
+func run_sim_clean() { local k, min_spk, m, first_valid, t_idx
+    if (fv.isopen()) { fv.close() }
+    ic[0].amp = iamp
+    ic[0].del = 0
+    ic[0].dur = t_therm + tstop_diag
+    ic[1].amp = iamp * iampfact
+    ic[1].del = Idel
+    ic[1].dur = t_therm + tstop_diag
+    NC[0].soma nci[0] = new NetCon(&v(.5), syni[1], 0, 0, wi)
+    NC[1].soma nci[1] = new NetCon(&v(.5), syni[0], 0, 0, wi)
+    tvec = new Vector()
+    tvec.record(&t)
+    for k = 0, N-1 {
+        spike_times[k] = new Vector()
+        vvec[k]        = new Vector()
+        NC[k].soma {
+            vvec[k].record(&v(0.5))
+            spike_rec[k] = new NetCon(&v(0.5), nullobj, 0, 0, 0)
+            spike_rec[k].record(spike_times[k])
+        }
+    }
+    finitialize(-65)
+    tstop = t_therm + tstop_diag
+    run()
+    t_idx = tvec.indwhere(">=", t_therm)
+    if (t_idx > 0) {
+        tvec.remove(0, t_idx - 1)
+        for k = 0, N-1 { vvec[k].remove(0, t_idx - 1) }
+    }
+    for k = 0, N-1 {
+        first_valid = spike_times[k].indwhere(">=", t_therm)
+        if (first_valid > 0) {
+            spike_times[k].remove(0, first_valid - 1)
+        } else if (first_valid < 0) {
+            spike_times[k].resize(0)
+        }
+    }
+    min_spk = spike_times[0].size()
+    if (spike_times[1].size() < min_spk) { min_spk = spike_times[1].size() }
+    return min_spk
+}
+// ============================================================
+// calc_phase()
+// ============================================================
+proc calc_phase() { local k, i, j, t_curr, t_prev, t_next
+    for k = 0, 1 {
+        phi[k] = new Vector(tvec.size())
+        phi[k].fill(-1)
+        for j = 0, tvec.size()-1 {
+            t_curr = tvec.x[j]
+            for i = 0, spike_times[k].size()-2 {
+                if (t_curr >= spike_times[k].x[i] && t_curr < spike_times[k].x[i+1]) {
+                    t_prev      = spike_times[k].x[i]
+                    t_next      = spike_times[k].x[i+1]
+                    phi[k].x[j] = 2*PI * (t_curr - t_prev) / (t_next - t_prev)
+                }
+            }
+        }
+    }
+}
+// ============================================================
+// calc_corr()
+// ============================================================
+func calc_corr() { local j, tin_idx, tfin_idx, sum, dt, t_range, dphi
+    tin_idx  = tvec.indwhere(">=", spike_times[0].x[1])
+    tfin_idx = tvec.indwhere(">=", spike_times[0].x[spike_times[0].size()-2])
+    if (tin_idx  < 0) { tin_idx  = 0 }
+    if (tfin_idx < 0) { tfin_idx = tvec.size()-1 }
+    t_range = tvec.x[tfin_idx] - tvec.x[tin_idx]
+    if (t_range <= 0) { return -9999 }
+    sum = 0
+    dt  = tvec.x[1] - tvec.x[0]
+    for j = tin_idx, tfin_idx-1 {
+        if (phi[0].x[j] >= 0 && phi[1].x[j] >= 0) {
+            dphi = phi[1].x[j] - phi[0].x[j]
+            sum  = sum + cos(dphi) * dt
+        }
+    }
+    return sum / t_range
+}
+// ============================================================
+// calc_corr_2_N()
+// ============================================================
+func calc_corr_2_N() { local l, tmax, ttt, ddt, cs_med, t_range
+    ispk     = new Vector(N)
+    tspkprec = new Vector(N)
+    tspknext = new Vector(N)
+    ph       = new Vector(N)
+    tmax = spike_times[0].x[spike_times[0].size()-1]
+    for l = 1, N-1 {
+        if (spike_times[l].x[spike_times[l].size()-1] < tmax) {
+            tmax = spike_times[l].x[spike_times[l].size()-1]
+        }
+    }
+    ddt = 0.1
+    for l = 0, N-1 {
+        ispk.x[l]     = 0
+        tspkprec.x[l] = spike_times[l].x[0]
+        tspknext.x[l] = spike_times[l].x[1]
+        ph.x[l]       = 0
+    }
+    cs_med = 0
+    ttt    = tvec.x[0]
+    while (ttt < tmax) {
+        for l = 0, N-1 {
+            if (spike_times[l].size() > 1) {
+                if (ttt >= tspknext.x[l]) {
+                    if (ispk.x[l] + 1 < spike_times[l].size() - 1) {
+                        ispk.x[l]     = ispk.x[l] + 1
+                        tspkprec.x[l] = spike_times[l].x[ispk.x[l]]
+                        tspknext.x[l] = spike_times[l].x[ispk.x[l] + 1]
+                    }
+                }
+                if (tspkprec.x[l] != tspknext.x[l] && ttt < tspknext.x[l]) {
+                    ph.x[l] = 2*PI * (ttt - tspkprec.x[l]) / (tspknext.x[l] - tspkprec.x[l])
+                }
+            }
+        }
+        cs_med = cs_med + cos(ph.x[1] - ph.x[0]) * ddt
+        ttt    = ttt + ddt
+    }
+    t_range = ttt - tvec.x[0]
+    if (t_range <= 0) { return -9999 }
+    return cs_med / t_range
+}
+proc test_iamp_por_regimen() { local iamp_test, spk, cval, c2val, \
+                                    f_out_0, f_out_1, ratio, \
+                                    iamp_min_fire, iamp_max_fire
+    print "=== TEST iamp por regimen (CA1 BBP IClamp) ==="
+    print "wi = 0 (sin acoplamiento), Idel =", Idel, " ms"
+    print "Buscamos rango de iamp donde ambas celulas disparan"
+    print ""
+    tstop_diag = 2000
+    wi = 0
+    iamp_min_fire = -1   // primer iamp con spikes
+    iamp_max_fire = -1   // ultimo iamp con spikes
+    iamp_test = 0.05
+    while (iamp_test <= 2.0 + 1e-8) {
+        iamp = iamp_test
+        spk = run_sim_clean()
+        // Frecuencias de salida
+        f_out_0 = 0
+        f_out_1 = 0
+        if (spike_times[0].size() >= 2) {
+            f_out_0 = (spike_times[0].size()-1) \
+                    / (spike_times[0].x[spike_times[0].size()-1] \
+                       - spike_times[0].x[0]) * 1000
+        }
+        if (spike_times[1].size() >= 2) {
+            f_out_1 = (spike_times[1].size()-1) \
+                    / (spike_times[1].x[spike_times[1].size()-1] \
+                       - spike_times[1].x[0]) * 1000
+        }
+        if (spk >= 5) {
+            calc_phase()
+            cval  = calc_corr()
+            c2val = calc_corr_2_N()
+            printf("  iamp=%.3f  spk0=%3d  spk1=%3d  f0=%6.2f  f1=%6.2f  C1=%6.3f  C2N=%6.3f", \
+                iamp_test, spike_times[0].size(), spike_times[1].size(), \
+                f_out_0, f_out_1, cval, c2val)
+            // Detectar simetria
+            if (f_out_0 > 0 && f_out_1 > 0) {
+                ratio = f_out_0 / f_out_1
+                if (ratio < 1) { ratio = 1/ratio }
+                if (ratio > 1.2) {
+                    printf("  (ASIMETRICO)\n")
+                } else {
+                    printf("  (FIRING)\n")
+                }
+                if (iamp_min_fire < 0) { iamp_min_fire = iamp_test }
+                iamp_max_fire = iamp_test
+            } else {
+                printf("  (UNA SOLA?)\n")
+            }
+        } else {
+            // Sin spikes: silencio o bloque
+            if (spike_times[0].size() == 0 && spike_times[1].size() == 0) {
+                if (iamp_min_fire > 0) {
+                    // Ya habia disparado antes, ahora no -> sospechoso de bloque
+                    printf("  iamp=%.3f  spk=0/0  (BLOQUE?)\n", iamp_test)
+                } else {
+                    printf("  iamp=%.3f  spk=0/0  (SILENCIO)\n", iamp_test)
+                }
+            } else {
+                printf("  iamp=%.3f  spk=%d/%d  (pocos spikes)\n", \
+                    iamp_test, spike_times[0].size(), spike_times[1].size())
+            }
+        }
+        // Paso adaptativo: fino cerca del umbral, grueso lejos
+        if (iamp_test < 0.2) {
+            iamp_test += 0.02
+        } else if (iamp_test < 0.5) {
+            iamp_test += 0.05
+        } else {
+            iamp_test += 0.1
+        }
+    }
+    print ""
+    print "=== RESUMEN ==="
+    if (iamp_min_fire > 0) {
+        printf("  iamp_min con spikes:  %.3f nA\n", iamp_min_fire)
+        printf("  iamp_max con spikes:  %.3f nA\n", iamp_max_fire)
+        printf("  RANGO UTIL: [%.3f, %.3f] nA\n", iamp_min_fire, iamp_max_fire)
+        printf("  Recomendacion: usar phase_diagram_compare con iamp\n")
+        printf("  en torno al centro: %.3f nA\n", (iamp_min_fire + iamp_max_fire)/2)
+    } else {
+        print "  NUNCA hubo spikes. Algo va mal:"
+        print "    - Verifica que IClamp esta conectado al soma"
+        print "    - Sube el rango de iamp_test hasta 5 nA"
+        print "    - Verifica psection() del soma"
+    }
+    tstop_diag = 5000
+}
+// ============================================================
+// phase_diagram_compare() OPTIMIZADO
+// ============================================================
+proc phase_diagram_compare() { local wi_val, iamp_val, k, n, min_spk, \
+    csum1, csum2, csum1_sq, csum2_sq, cval2, sigma2, \
+    Nexp_actual, cv, c2
+    // ========================================================
+    // OPTIMIZADO: pasos manejables + flush() para no perder progreso
+    // 6 iamp x 21 wi = 126 sims
+    // Tiempo estimado: ~10-12 horas
+    // ========================================================
+    iamp_min  = 0.41
+    iamp_max  = 1.16
+    iamp_step = 0.05          // 6 valores de iamp
+    wi_min    = 0
+    wi_max    = 1e-4
+    wi_step   = 5e-6         // 21 valores de wi
+    tstop_diag = 1500        // <-- antes 2000 (suficiente con cvode)
+    Nexp       = 1
+    sprint(new_file, "Correlacion_CA1_iamp_vs_wi_Idel%g_Termalizacion_%d_SinBloqueo_MasCochina_UWU.txt", \
+           Idel, t_therm)
+    corr_out = new File()
+    corr_out.wopen(new_file)
+    corr_out.printf("# CA1_BBP IClamp (sin bloqueo)  Idel=%.4g  t_therm=%d\n", Idel, t_therm)
+    corr_out.printf("# Col: iamp  wi  C2N  sC2N\n")
+    print "Guardando en: ", new_file
+    iamp_val = iamp_min
+    while (iamp_val <= iamp_max + iamp_step/2) {
+        iamp = iamp_val
+        print ">>> iamp =", iamp_val, " nA"
+        wi_val = wi_min
+        while (wi_val <= wi_max + wi_step/2) {
+            wi = wi_val
+            min_spk = run_sim_clean()
+            print "  wi=", wi_val, " spikes0=", spike_times[0].size(), \
+                  " spikes1=", spike_times[1].size()
+            cval1=0  cval2=0
+            sigma1=0  sigma2=0
+            Nexp_actual = 0
+            if (min_spk >= 5) {
+                csum1=0  csum2=0
+                csum1_sq=0  csum2_sq=0
+                for n = 1, Nexp {
+                    min_spk = run_sim_clean()
+                    if (min_spk >= 5) {
+                        c2 = calc_corr_2_N()
+                        csum2 += c2      csum2_sq += c2*c2
+                        Nexp_actual += 1
+                    }
+                }
+                if (Nexp_actual > 0) {
+                    cval1 = csum1/Nexp_actual
+                    cval2 = csum2/Nexp_actual
+                    if (Nexp_actual > 1) {
+                        sigma2 = sqrt((csum2_sq/Nexp_actual - cval2*cval2) \
+                                * Nexp_actual / (Nexp_actual-1))
+                    }
+                    print "  -> C2N = ", cval2
+                }
+            }
+            corr_out.printf("%.6g\t%.6g\t%.6g\t%.6g\n", \
+                iamp_val, wi_val, cval2, sigma2)
+            wi_val += wi_step
+        }
+        corr_out.printf("\n")
+        corr_out.flush()              // <-- guarda al disco tras cada iamp
+        iamp_val += iamp_step
+    }
+    corr_out.close()
+    printf("Guardado en %s\n", new_file)
+}
+// ============================================================
+// snippet_freq_diagram_CA1_IClamp.hoc
+// ------------------------------------------------------------
+// PEGAR al final de 2cells_sinc_IClamp_CA1.hoc, justo antes
+// de la llamada a phase_diagram_compare() (linea ~412).
+//
+// freq_diagram(): barrido (iamp, wi) -> f_in y f_out por celula
+//   - PASO 1: wi = 0  -> f_in_0, f_in_1 (rate natural sin acoplamiento)
+//   - PASO 2: barrido en wi -> f_out_0, f_out_1
+//
+// Columnas del fichero:
+//   iamp[nA]  f_in_0[Hz]  f_in_1[Hz]  wi  f_out_0[Hz]  f_out_1[Hz]
+//
+// PARA PLOTEAR: eje X = iamp (col 1), eje Y = f_out_0/f_out_1
+// (cols 5 y 6), una curva por cada valor de wi.
+// ============================================================
+
+proc freq_diagram() { local wi_val, iamp_val, min_spk, \
+                           f_in_0, f_in_1, f_out_0, f_out_1
+    // Rango basado en lo que viste en el test_iamp y en
+    // phase_diagram_compare (zona de FIRING en CA1 BBP)
+    iamp_min  = 0.41
+    iamp_max  = 1.16
+    iamp_step = 0.05          // 6 valores de iamp
+    wi_min    = 0
+    wi_max    = 1e-4
+    wi_step   = 5e-6         // 21 wi
+    tstop_diag = 1500
+
+    sprint(new_file, "FreqIn_vs_FreqOut_IClamp_CA1_Idel%g_therm%d.txt", \
+           Idel, t_therm)
+    corr_out = new File()
+    corr_out.wopen(new_file)
+    corr_out.printf("# CA1 BBP IClamp  Idel=%g  t_therm=%d  celsius=%.1f\n", \
+                    Idel, t_therm, celsius)
+    corr_out.printf("# Columnas: iamp[nA]  f_in_0[Hz]  f_in_1[Hz]  wi  f_out_0[Hz]  f_out_1[Hz]\n")
+    print "Guardando en: ", new_file
+
+    iamp_val = iamp_min
+    while (iamp_val <= iamp_max + iamp_step/2) {
+        iamp = iamp_val
+
+        // --- PASO 1: frecuencias naturales sin inhibicion ---
+        wi = 0
+        min_spk = run_sim_clean()
+        f_in_0 = 0
+        f_in_1 = 0
+        if (spike_times[0].size() >= 2) {
+            f_in_0 = (spike_times[0].size()-1) \
+                   / (spike_times[0].x[spike_times[0].size()-1] \
+                      - spike_times[0].x[0]) * 1000
+        }
+        if (spike_times[1].size() >= 2) {
+            f_in_1 = (spike_times[1].size()-1) \
+                   / (spike_times[1].x[spike_times[1].size()-1] \
+                      - spike_times[1].x[0]) * 1000
+        }
+        print "iamp=", iamp_val, " nA   f_in_0=", f_in_0, " Hz   f_in_1=", f_in_1, " Hz"
+
+        // --- PASO 2: f_out para cada wi ---
+        wi_val = wi_min
+        while (wi_val <= wi_max + wi_step/2) {
+            wi = wi_val
+            min_spk = run_sim_clean()
+            f_out_0 = 0
+            f_out_1 = 0
+            if (spike_times[0].size() >= 2) {
+                f_out_0 = (spike_times[0].size()-1) \
+                        / (spike_times[0].x[spike_times[0].size()-1] - spike_times[0].x[0]) * 1000
+            }
+            if (spike_times[1].size() >= 2) {
+                f_out_1 = (spike_times[1].size()-1) \
+                        / (spike_times[1].x[spike_times[1].size()-1] - spike_times[1].x[0]) * 1000
+            }
+            print "  wi=", wi_val, "  f_out_0=", f_out_0, "  f_out_1=", f_out_1
+            corr_out.printf("%.6g %.6g %.6g %.6g %.6g %.6g\n", \
+                iamp_val, f_in_0, f_in_1, wi_val, f_out_0, f_out_1)
+            wi_val += wi_step
+        }
+        corr_out.printf("\n")
+        corr_out.flush()
+        iamp_val += iamp_step
+    }
+    corr_out.close()
+    printf("Guardado en %s\n", new_file)
+}
+
+// ============================================================
+// COMO LANZAR: al final del .hoc principal sustituye
+//   phase_diagram_compare()
+// por
+//   freq_diagram()
+// o lanza las dos en orden (la segunda usa los mismos parametros).
+//
+// Tiempo estimado: 17 iamps x 22 wi x ~3s/sim ~= 18-20 min en CA1
+// ============================================================
+// ============================================================
+// PASADA INICIAL (verificacion corta)
+// ============================================================
+tvec = new Vector()
+tvec.record(&t)
+for k = 0, N-1 {
+    vvec[k] = new Vector()
+    NC[k].soma vvec[k].record(&v(0.5))
+}
+sprint(new_file, "Trayectorias_CA1_IClamp_iamp_%g_wi_%g_SinBloqueo.txt", iamp, wi)
+fv = new File()
+fv.wopen(new_file)
+fv.printf("# t  NC[0].soma.v  NC[1].soma.v   iamp=%g wi=%g Idel=%g\n", \
+          iamp, wi, Idel)
+// IClamps para pasada inicial
+ic[0].amp = iamp
+ic[0].del = 0
+ic[0].dur = t_therm + 1000
+ic[1].amp = iamp * iampfact
+ic[1].del = Idel
+ic[1].dur = t_therm + 1000
+tstop = t_therm + 1000
+print "Lanzando pasada inicial (", tstop, "ms)..."
+run()
+fv.close()
+print "Pasada inicial completada."
+// ============================================================
+// LANZAMIENTO DEL BARRIDO
+// ============================================================
+tstop_diag = 1500
+//phase_diagram_compare()
+//test_iamp_por_regimen()
+//freq_diagram()
+
+print ""
+print "============================================="
+print "  Barrido IClamp BBP (sin bloqueo) completado."
+print "============================================="

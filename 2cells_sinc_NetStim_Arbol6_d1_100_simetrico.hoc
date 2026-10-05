@@ -1,0 +1,162 @@
+// ============================================================
+// 2cells_sinc_NetStim_Arbol6_d1_100_simetrico.hoc
+// ------------------------------------------------------------
+// Caso simetrico d1 = d0 = 100 um.
+// Restriccion morfologica: la fila HI (row=2) empieza a 150 um
+// del soma, asi que d1 <= 150 no es alcanzable en HI. Pero el
+// caso d1=d0 es simetrico por definicion, y en un cable el
+// resultado depende solo de la distancia electrotonica al soma,
+// no del hemisferio. Por eso ponemos la sinapsis de N1 en row=0
+// (LO), igual que N0.
+//
+// Salida en formato compatible con los _resumen.txt previos, para
+// que plot_C_vs_wi_Arbol6.py lo recoja automaticamente.
+// ============================================================
+load_file("nrngui.hoc")
+load_file("Arbol6_morfologia.hoc")
+cvode_active(1)
+cvode.atol(1e-5)
+celsius=34
+v_init=-65
+PI=3.141592653589793
+
+d0=100
+d1=100
+wi=0.0005
+ws_total=0.0016
+FreqInp=50
+t_therm=500
+tstop_diag=2000
+Nrep=1
+wi_min=0
+wi_max=0.001
+wi_step=0.00005
+
+objref cell[2], exc[2][2], nexc[2][2], inh[2], ni[2], ns
+objref spike_times[2], spike_rec[2], nil, tv, vv[2]
+objref raw, summary, valsC, valsF0, valsF1
+strdef out_prefix, fname
+out_prefix="Arbol6_resultados_d100_simetrico_1rep"
+
+for k=0,1 { cell[k]=new Arbol6() }
+cell[0].configure(-180,0,d0)
+cell[1].configure( 180,0,d1)    // N1 tambien en row=0 (LO): caso simetrico
+ns=new NetStim()
+{ ns.start=0  ns.interval=1000/FreqInp  ns.number=1e9  ns.noise=0 }
+for k=0,1 {
+ cell[k].soma {
+  inh[k]=new ExpSyn(0.5)
+  inh[k].tau=30
+  inh[k].e=-80
+  spike_times[k]=new Vector()
+  spike_rec[k]=new NetCon(&v(0.5),nil,0,0,0)
+  spike_rec[k].record(spike_times[k])
+ }
+}
+cell[0].soma ni[0]=new NetCon(&v(0.5),inh[1],0,0,wi)
+cell[1].soma ni[1]=new NetCon(&v(0.5),inh[0],0,0,wi)
+
+proc colocar_sinapsis() { local k,j,b,actual
+ for k=0,1 for j=0,1 { nexc[k][j]=nil  exc[k][j]=nil }
+ cell[0].configure(-180,0,d0)
+ cell[1].configure( 180,0,d1)   // row=0 en ambas celulas
+ for k=0,1 {
+  cell[k].soma distance(0,0.5)
+  for j=0,1 {
+   // ambas celulas usan branch 0 y 1 (fila row=0, hemisferio LO)
+   b=j
+   cell[k].branch[b] { exc[k][j]=new Exp2Syn(1)  actual=distance(1) }
+   if (abs(actual-cell[k].target_distance)>0.001) {
+    execerror("Incorrect path distance", "")
+   }
+   exc[k][j].tau1=0.5  exc[k][j].tau2=10  exc[k][j].e=0
+   nexc[k][j]=new NetCon(ns,exc[k][j],0,0,ws_total/2)
+  }
+ }
+}
+colocar_sinapsis()
+
+proc run_sim_clean() { local k,idx
+ ni[0].weight[0]=wi
+ ni[1].weight[0]=wi
+ ns.interval=1000/FreqInp
+ tv=new Vector()  tv.record(&t,0.1)
+ for k=0,1 { vv[k]=new Vector()  cell[k].soma vv[k].record(&v(0.5),0.1) }
+ tstop=t_therm+tstop_diag
+ run()
+ for k=0,1 {
+  idx=spike_times[k].indwhere(">=",t_therm)
+  if (idx<0) { spike_times[k].resize(0) } else {
+   if (idx>0) spike_times[k].remove(0,idx-1)
+  }
+  idx=spike_times[k].indwhere(">=",tstop)
+  if (idx>=0) spike_times[k].resize(idx)
+ }
+}
+
+corr_duration=0
+func calc_corr_2_N() { local i,j,a,b,e0,e1,left,right,p0,p1,w,delta,area
+ corr_duration=0
+ if (spike_times[0].size()<2 || spike_times[1].size()<2) return -9999
+ a=spike_times[0].x[0]
+ if (spike_times[1].x[0]>a) a=spike_times[1].x[0]
+ b=spike_times[0].x[spike_times[0].size()-1]
+ if (spike_times[1].x[spike_times[1].size()-1]<b) b=spike_times[1].x[spike_times[1].size()-1]
+ if (b<=a) return -9999
+ i=0  j=0  area=0  left=a
+ while (left<b-1e-10) {
+  while (spike_times[0].x[i+1]<=left && i<spike_times[0].size()-2) i+=1
+  while (spike_times[1].x[j+1]<=left && j<spike_times[1].size()-2) j+=1
+  e0=spike_times[0].x[i+1]  e1=spike_times[1].x[j+1]
+  right=e0
+  if (e1<right) right=e1
+  if (b<right) right=b
+  p0=2*PI/(e0-spike_times[0].x[i])
+  p1=2*PI/(e1-spike_times[1].x[j])
+  delta=p1*(left-spike_times[1].x[j])-p0*(left-spike_times[0].x[i])
+  w=p1-p0
+  if (abs(w)<1e-8) { area+=cos(delta)*(right-left) } else {
+   area+=(sin(delta+w*(right-left))-sin(delta))/w
+  }
+  left=right
+ }
+ corr_duration=b-a
+ return area/corr_duration
+}
+
+// Barrido solo en wi (d1 = d0 = 100 fijo)
+proc barrido_wi() { local iw,c,f0,f1,nw
+ raw=new File()
+ summary=new File()
+ sprint(fname,"%s_repeticiones.txt",out_prefix)
+ raw.wopen(fname)
+ sprint(fname,"%s_resumen.txt",out_prefix)
+ summary.wopen(fname)
+ raw.printf("# d0_um d1_um wi_uS rep C f0_Hz f1_Hz C_valid overlap_ms\n")
+ summary.printf("# Caso simetrico d1=d0=100 um  (N1 en row=0, hemisferio LO)\n")
+ summary.printf("# ws_total=%g FreqInp=%g t_therm=%g duration=%g Nrep=%d\n",\
+                ws_total,FreqInp,t_therm,tstop_diag,Nrep)
+ summary.printf("# d0_um d1_um wi_uS C_mean C_sd f0_mean f0_sd f1_mean f1_sd n_C n_reps\n")
+ nw=int((wi_max-wi_min)/wi_step+1e-6)
+ for iw=0,nw {
+  wi=wi_min+iw*wi_step
+  run_sim_clean()
+  c=calc_corr_2_N()
+  f0=1000*spike_times[0].size()/tstop_diag
+  f1=1000*spike_times[1].size()/tstop_diag
+  raw.printf("%g %g %.9g 1 %.12g %.9g %.9g %d %.9g\n",\
+             d0,d1,wi,c,f0,f1,c!=-9999,corr_duration)
+  summary.printf("%g %g %.9g %.12g -9999 %.9g -9999 %.9g -9999 1 1\n",\
+                 d0,d1,wi,c,f0,f1)
+  raw.flush()
+  summary.flush()
+  printf("d1=%g wi=%g C=%g f0=%g f1=%g\n",d1,wi,c,f0,f1)
+ }
+ raw.close()
+ summary.close()
+ printf("[ok] guardado prefijo %s\n",out_prefix)
+}
+
+print "Arbol6: caso simetrico d1=d0=100 (N1 en LO)"
+barrido_wi()
+print "TERMINADO."

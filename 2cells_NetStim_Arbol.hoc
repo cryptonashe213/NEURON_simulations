@@ -1,0 +1,1157 @@
+// ============================================================
+// 2cells_NetStim_TreeDend_naxkdr.hoc
+// ------------------------------------------------------------
+// Morfologia tipo arbol simplificado:
+//   - 1 soma
+//   - 1 dendrita principal (apical-like) que sale del soma
+//   - 2 dendritas laterales (mas cortas) conectadas en
+//     posiciones intermedias del eje principal:
+//        lat_HI a 0.7 del principal (mas arriba)
+//        lat_LO a 0.5 del principal (mas abajo)
+//
+// Sinapsis EXCITATORIA del NetStim se inyecta en las
+// dendritas LATERALES (no en soma).
+// Sinapsis INHIBITORIA reciproca sigue siendo perisomatica.
+//
+// Mismo formato/proceso que 2cells_NetStim_BallStick4_naxkdr.hoc.
+// ============================================================
+load_file("nrngui.hoc")
+// (nrniv autocarga nrnmech.dll del cwd _Mod_Lezioni)
+
+// ============================================================
+// ESTRUCTURA: soma[2] + dendritas
+// ============================================================
+create soma[2]
+create main_0,  main_1                 // dendrita principal (cell 0 y 1)
+create latHI_0, latHI_1                // dendrita lateral alta
+create latLO_0, latLO_1                // dendrita lateral baja
+
+// ----------------------------------------------------------
+// Geometria 3D explicita con pt3dadd (las dendritas laterales
+// salen con ANGULO respecto a la dendrita principal).
+//
+// Cada celula tiene su propio "arbol":
+//   - Soma a (xc, 0, 0)
+//   - Dendrita principal vertical hacia arriba (eje +y)
+//   - Lateral HI sale a 0.7 del principal con angulo +ALPHA (derecha)
+//   - Lateral LO sale a 0.5 del principal con angulo -ALPHA (izquierda)
+// ----------------------------------------------------------
+PI_LOCAL  = 3.14159265358979
+
+cell_dx   = 60        // separacion horizontal entre los dos somas (um)
+DIAM_SOMA = 20
+DIAM_MAIN = 2.0
+DIAM_LAT  = 1.0
+L_MAIN    = 200
+L_LAT     = 50
+P_LATHI   = 0.7       // posicion en el principal donde nace HI
+P_LATLO   = 0.5       //                                "  LO
+ALPHA_DEG = 45        // angulo de las laterales respecto a la vertical
+ALPHA_RAD = ALPHA_DEG * PI_LOCAL / 180
+
+// Cell 0 en x=-cell_dx/2, Cell 1 en x=+cell_dx/2
+xc0 = -cell_dx/2
+xc1 =  cell_dx/2
+
+// Coordenadas auxiliares precalculadas
+y_HI_pos = P_LATHI * L_MAIN
+y_LO_pos = P_LATLO * L_MAIN
+dx_lat   = L_LAT * sin(ALPHA_RAD)
+dy_lat   = L_LAT * cos(ALPHA_RAD)
+
+// --- Somas (cilindros cortos centrados en xc, 0, 0) ---
+soma[0] { pt3dclear()
+    pt3dadd(xc0 - DIAM_SOMA/2, 0, 0, DIAM_SOMA)
+    pt3dadd(xc0 + DIAM_SOMA/2, 0, 0, DIAM_SOMA)
+}
+soma[1] { pt3dclear()
+    pt3dadd(xc1 - DIAM_SOMA/2, 0, 0, DIAM_SOMA)
+    pt3dadd(xc1 + DIAM_SOMA/2, 0, 0, DIAM_SOMA)
+}
+
+// --- Dendrita principal (vertical hacia arriba desde el soma) ---
+main_0 { pt3dclear()  nseg=11  Ra=100  cm=1
+    pt3dadd(xc0, 0,      0, DIAM_MAIN)
+    pt3dadd(xc0, L_MAIN, 0, DIAM_MAIN)
+}
+main_1 { pt3dclear()  nseg=11  Ra=100  cm=1
+    pt3dadd(xc1, 0,      0, DIAM_MAIN)
+    pt3dadd(xc1, L_MAIN, 0, DIAM_MAIN)
+}
+
+// --- Laterales HI (nacen en 0.7, ANGULO +ALPHA hacia la derecha) ---
+latHI_0 { pt3dclear()  nseg=5  Ra=100  cm=1
+    pt3dadd(xc0, y_HI_pos, 0, DIAM_LAT)
+    pt3dadd(xc0 + dx_lat, y_HI_pos + dy_lat, 0, DIAM_LAT)
+}
+latHI_1 { pt3dclear()  nseg=5  Ra=100  cm=1
+    pt3dadd(xc1, y_HI_pos, 0, DIAM_LAT)
+    pt3dadd(xc1 + dx_lat, y_HI_pos + dy_lat, 0, DIAM_LAT)
+}
+
+// --- Laterales LO (nacen en 0.5, ANGULO -ALPHA hacia la izquierda) ---
+latLO_0 { pt3dclear()  nseg=5  Ra=100  cm=1
+    pt3dadd(xc0, y_LO_pos, 0, DIAM_LAT)
+    pt3dadd(xc0 - dx_lat, y_LO_pos + dy_lat, 0, DIAM_LAT)
+}
+latLO_1 { pt3dclear()  nseg=5  Ra=100  cm=1
+    pt3dadd(xc1, y_LO_pos, 0, DIAM_LAT)
+    pt3dadd(xc1 - dx_lat, y_LO_pos + dy_lat, 0, DIAM_LAT)
+}
+
+// Conexiones:
+//  - principal nace en soma(0.5)
+//  - laterales nacen en posicion 0.7 (HI) y 0.5 (LO) del principal
+connect main_0(0),  soma[0](0.5)
+connect latHI_0(0), main_0(0.7)
+connect latLO_0(0), main_0(0.5)
+
+connect main_1(0),  soma[1](0.5)
+connect latHI_1(0), main_1(0.7)
+connect latLO_1(0), main_1(0.5)
+
+// ============================================================
+// Canales (identicos al BS4 / simple)
+// ============================================================
+forall insert pas
+forall insert kdr
+forall insert nax
+forall g_pas       = 0.0001
+forall e_pas       = -65
+forall ena         = 55
+forall ek          = -90
+forall gbar_nax    = 0.04
+forall gkdrbar_kdr = 0.04
+
+celsius = 34
+PI      = 3.14159265358979
+
+// ============================================================
+// PARAMETROS GLOBALES
+// ============================================================
+ws       = 0.0016    // peso excitatorio (puede que necesite mas con dendrita lejana)
+wi       = 1e-3
+FreqInp  = 40
+iampfact = 1
+delay    = 20
+Idel     = 0
+N        = 2
+t_therm  = 4000
+
+// Donde colocar la sinapsis excitatoria:
+//   1 = dendrita lateral alta (latHI)
+//   2 = dendrita lateral baja (latLO)
+//   3 = ambas (excitacion distribuida en las dos laterales)
+SYN_LOC = 1
+// Posicion dentro de la dendrita lateral elegida (0=base, 1=punta)
+SYN_POS = 0.5
+
+// ============================================================
+// Objetos
+// ============================================================
+objref fv, corr_out
+objref syni[2], nci[2], ic[2]
+objref synA_HI[2], synA_LO[2], ncA_HI[2], ncA_LO[2], ns
+objref phi[2]
+objref ispk, tspkprec, tspknext, ph
+objref spike_times[2], spike_rec[2], vvec[2], tvec
+objref nullobj
+strdef new_file
+fv = new File()
+
+// ============================================================
+// NETSTIM compartido
+// ============================================================
+ns          = new NetStim(0.5)
+ns.number   = 1000000
+ns.interval = 1000/FreqInp
+ns.start    = 10
+ns.noise    = 0
+
+// ============================================================
+// INICIALIZACION DE SOMAS + SINAPSIS
+// ============================================================
+for k = 0, 1 {
+    soma[k] {
+        // Inhibicion perisomatica (igual que siempre)
+        syni[k]     = new ExpSyn(0.5)
+        syni[k].tau = 30
+        syni[k].e   = -80
+
+        // IClamp dummy (no se usa pero estable)
+        ic[k]     = new IClamp(0.5)
+        ic[k].amp = 0
+        ic[k].dur = 0
+        ic[k].del = 0
+
+        spike_times[k] = new Vector()
+        spike_rec[k]   = new NetCon(&v(0.5), nullobj, 0, 0, 0)
+        spike_rec[k].record(spike_times[k])
+    }
+}
+
+// Sinapsis excitatorias en LAS DENDRITAS LATERALES
+// (segun SYN_LOC ponemos en HI, LO, o ambas)
+if (SYN_LOC == 1 || SYN_LOC == 3) {
+    latHI_0 { synA_HI[0] = new Exp2Syn(SYN_POS)  synA_HI[0].tau1=0.5  synA_HI[0].tau2=10  synA_HI[0].e=0 }
+    latHI_1 { synA_HI[1] = new Exp2Syn(SYN_POS)  synA_HI[1].tau1=0.5  synA_HI[1].tau2=10  synA_HI[1].e=0 }
+}
+if (SYN_LOC == 2 || SYN_LOC == 3) {
+    latLO_0 { synA_LO[0] = new Exp2Syn(SYN_POS)  synA_LO[0].tau1=0.5  synA_LO[0].tau2=10  synA_LO[0].e=0 }
+    latLO_1 { synA_LO[1] = new Exp2Syn(SYN_POS)  synA_LO[1].tau1=0.5  synA_LO[1].tau2=10  synA_LO[1].e=0 }
+}
+
+// NetCons excitatorios desde el NetStim a cada sinapsis
+// Cell 1 recibe con un retardo `delay` adicional
+if (SYN_LOC == 1 || SYN_LOC == 3) {
+    ncA_HI[0] = new NetCon(ns, synA_HI[0], 0, 0,     ws)
+    ncA_HI[1] = new NetCon(ns, synA_HI[1], 0, delay, ws)
+}
+if (SYN_LOC == 2 || SYN_LOC == 3) {
+    ncA_LO[0] = new NetCon(ns, synA_LO[0], 0, 0,     ws)
+    ncA_LO[1] = new NetCon(ns, synA_LO[1], 0, delay, ws)
+}
+
+// Inhibicion reciproca soma-soma
+soma[0] nci[0] = new NetCon(&v(.5), syni[1], 0, 0, wi)
+soma[1] nci[1] = new NetCon(&v(.5), syni[0], 0, 0, wi)
+
+print "============================================="
+print "  TreeDend NetStim (soma + main + 2 laterales)"
+print "  SYN_LOC=", SYN_LOC, " SYN_POS=", SYN_POS
+print "  ws=", ws, "  wi=", wi, "  delay=", delay
+print "============================================="
+
+// ============================================================
+// advance()
+// ============================================================
+proc advance() {
+    fadvance()
+    if (fv.isopen()) {
+        fv.printf("%g %g %g\n", t, soma[0].v(0.5), soma[1].v(0.5))
+    }
+}
+
+// ============================================================
+// run_sim_clean()
+// ============================================================
+func run_sim_clean() { local k, min_spk, first_valid, t_idx
+    if (fv.isopen()) { fv.close() }
+    ns.number   = 1000000
+    ns.interval = 1000 / FreqInp
+    ns.start    = 0
+
+    // Reconectar NetCons con los pesos actuales
+    if (SYN_LOC == 1 || SYN_LOC == 3) {
+        ncA_HI[0] = new NetCon(ns, synA_HI[0], 0, 0,     ws)
+        ncA_HI[1] = new NetCon(ns, synA_HI[1], 0, delay, ws)
+    }
+    if (SYN_LOC == 2 || SYN_LOC == 3) {
+        ncA_LO[0] = new NetCon(ns, synA_LO[0], 0, 0,     ws)
+        ncA_LO[1] = new NetCon(ns, synA_LO[1], 0, delay, ws)
+    }
+    soma[0] nci[0] = new NetCon(&v(.5), syni[1], 0, 0, wi)
+    soma[1] nci[1] = new NetCon(&v(.5), syni[0], 0, 0, wi)
+
+    for k = 0, 1 { ic[k].amp = 0  ic[k].dur = 0 }
+
+    tvec = new Vector()
+    tvec.record(&t)
+    for k = 0, 1 {
+        spike_times[k] = new Vector()
+        vvec[k]        = new Vector()
+        soma[k] {
+            vvec[k].record(&v(0.5))
+            spike_rec[k] = new NetCon(&v(0.5), nullobj, 0, 0, 0)
+            spike_rec[k].record(spike_times[k])
+        }
+    }
+    finitialize(-65)
+    tstop = t_therm + tstop_diag
+    run()
+    t_idx = tvec.indwhere(">=", t_therm)
+    if (t_idx > 0) {
+        tvec.remove(0, t_idx - 1)
+        for k = 0, 1 { vvec[k].remove(0, t_idx - 1) }
+    }
+    for k = 0, 1 {
+        first_valid = spike_times[k].indwhere(">=", t_therm)
+        if (first_valid > 0) {
+            spike_times[k].remove(0, first_valid - 1)
+        } else if (first_valid < 0) {
+            spike_times[k].resize(0)
+        }
+    }
+    min_spk = spike_times[0].size()
+    return min_spk
+}
+
+// ============================================================
+// calc_phase, calc_corr, calc_corr_2_N (identicos)
+// ============================================================
+proc calc_phase() { local k, i, j, t_curr, t_prev, t_next
+    for k = 0, 1 {
+        phi[k] = new Vector(tvec.size())
+        phi[k].fill(-1)
+        for j = 0, tvec.size()-1 {
+            t_curr = tvec.x[j]
+            for i = 0, spike_times[k].size()-2 {
+                if (t_curr >= spike_times[k].x[i] && t_curr < spike_times[k].x[i+1]) {
+                    t_prev = spike_times[k].x[i]
+                    t_next = spike_times[k].x[i+1]
+                    phi[k].x[j] = 2*PI * (t_curr - t_prev) / (t_next - t_prev)
+                }
+            }
+        }
+    }
+}
+
+func calc_corr() { local j, tin_idx, tfin_idx, sum, dt, t_range, dphi
+    tin_idx  = tvec.indwhere(">=", spike_times[0].x[1])
+    tfin_idx = tvec.indwhere(">=", spike_times[0].x[spike_times[0].size()-2])
+    if (tin_idx  < 0) { tin_idx  = 0 }
+    if (tfin_idx < 0) { tfin_idx = tvec.size()-1 }
+    t_range = tvec.x[tfin_idx] - tvec.x[tin_idx]
+    if (t_range <= 0) { return -9999 }
+    sum = 0
+    dt  = tvec.x[1] - tvec.x[0]
+    for j = tin_idx, tfin_idx-1 {
+        if (phi[0].x[j] >= 0 && phi[1].x[j] >= 0) {
+            dphi = phi[1].x[j] - phi[0].x[j]
+            sum  = sum + cos(dphi) * dt
+        }
+    }
+    return sum / t_range
+}
+
+func calc_corr_2_N() { local l, tmax, ttt, ddt, cs_med, t_range
+    ispk = new Vector(N)  tspkprec = new Vector(N)  tspknext = new Vector(N)  ph = new Vector(N)
+    tmax = spike_times[0].x[spike_times[0].size()-1]
+    for l = 1, N-1 {
+        if (spike_times[l].x[spike_times[l].size()-1] < tmax) {
+            tmax = spike_times[l].x[spike_times[l].size()-1]
+        }
+    }
+    ddt = 0.1
+    for l = 0, N-1 {
+        ispk.x[l] = 0
+        tspkprec.x[l] = spike_times[l].x[0]
+        tspknext.x[l] = spike_times[l].x[1]
+        ph.x[l] = 0
+    }
+    cs_med = 0
+    ttt = tvec.x[0]
+    while (ttt < tmax) {
+        for l = 0, N-1 {
+            if (spike_times[l].size() > 1) {
+                if (ttt >= tspknext.x[l]) {
+                    if (ispk.x[l] + 1 < spike_times[l].size() - 1) {
+                        ispk.x[l] += 1
+                        tspkprec.x[l] = spike_times[l].x[ispk.x[l]]
+                        tspknext.x[l] = spike_times[l].x[ispk.x[l] + 1]
+                    }
+                }
+                if (tspkprec.x[l] != tspknext.x[l] && ttt < tspknext.x[l]) {
+                    ph.x[l] = 2*PI * (ttt - tspkprec.x[l]) / (tspknext.x[l] - tspkprec.x[l])
+                }
+            }
+        }
+        cs_med += cos(ph.x[1] - ph.x[0]) * ddt
+        ttt += ddt
+    }
+    t_range = ttt - tvec.x[0]
+    if (t_range <= 0) { return -9999 }
+    return cs_med / t_range
+}
+// ============================================================
+// snippet_freq_test_TreeDend_NetStim.hoc
+// ------------------------------------------------------------
+// PEGAR al final de 2cells_NetStim_TreeDend_naxkdr.hoc,
+// antes de la llamada a phase_diagram_compare().
+//
+// Contiene:
+//   - test_ws_por_freq()  : barre ws para cada FreqInp y reporta
+//                            f_out, C1 y C2N (diagnostico)
+//   - freq_diagram()      : barre (FreqInp, wi) y guarda f_in y f_out
+// ============================================================
+
+// ============================================================
+// test_ws_por_freq()
+// Para cada FreqInp en {30, 40, 50, 60, 70} prueba ws en
+// rango log y reporta spikes/f_out/C1/C2N
+// ============================================================
+proc test_ws_por_freq() { local freq_test, ws_test, spk, cval, c2val, \
+                               f_out_0, f_out_1, best_ws, best_metric
+    print "=== TEST ws optimo por frecuencia (TreeDend NetStim) ==="
+    print "SYN_LOC=", SYN_LOC, "  SYN_POS=", SYN_POS
+    print ""
+    tstop_diag = 2000
+    wi = 0
+    freq_test = 30
+    while (freq_test <= 70) {
+        FreqInp     = freq_test
+        ws_test     = 1e-4
+        best_ws     = -1
+        best_metric = 0
+        printf("--- FreqInp = %g Hz ---\n", freq_test)
+        while (ws_test <= 5e-2 + 1e-8) {
+            ws  = ws_test
+            spk = run_sim_clean()
+            f_out_0 = 0  f_out_1 = 0
+            if (spike_times[0].size() >= 2) {
+                f_out_0 = (spike_times[0].size()-1) \
+                        / (spike_times[0].x[spike_times[0].size()-1] \
+                           - spike_times[0].x[0]) * 1000
+            }
+            if (spike_times[1].size() >= 2) {
+                f_out_1 = (spike_times[1].size()-1) \
+                        / (spike_times[1].x[spike_times[1].size()-1] \
+                           - spike_times[1].x[0]) * 1000
+            }
+            if (spk >= 5) {
+                calc_phase()
+                cval  = calc_corr()
+                c2val = calc_corr_2_N()
+                printf("  ws=%-9g  spk0=%3d  spk1=%3d  f0=%6.2f  f1=%6.2f  C1=%6.3f  C2N=%6.3f", \
+                    ws_test, spike_times[0].size(), spike_times[1].size(), \
+                    f_out_0, f_out_1, cval, c2val)
+                if (f_out_0 >= freq_test * 0.99) {
+                    printf("  (LOCK 1:1)\n")
+                } else if (f_out_0 > 0) {
+                    printf("  (SKIPPING)\n")
+                    if (ws_test > best_ws) {
+                        best_ws     = ws_test
+                        best_metric = f_out_0
+                    }
+                } else {
+                    printf("  (??)\n")
+                }
+            } else {
+                printf("  ws=%-9g  spk=%d/%d  (sin spikes)\n", \
+                    ws_test, spike_times[0].size(), spike_times[1].size())
+            }
+            ws_test = ws_test * 2
+        }
+        if (best_ws > 0) {
+            printf("  >>> CANDIDATO freq=%g: ws=%g (f_out=%.2f)\n\n", \
+                freq_test, best_ws, best_metric)
+        } else {
+            printf("  >>> freq=%g: TODO LOCK 1:1 o sin spikes\n\n", freq_test)
+        }
+        freq_test += 10
+    }
+    tstop_diag = 4000
+    print "FIN del test."
+}
+
+// ============================================================
+// freq_diagram(): barrido (FreqInp, wi) -> f_in y f_out
+// ============================================================
+proc freq_diagram() { local wi_val, freq_val, min_spk, \
+                           f_in_0, f_in_1, f_out_0, f_out_1
+    freq_min  = 30
+	freq_max  = 80
+	freq_step = 2            // 26 freqs
+	wi_min    = 0
+	wi_max    = 1e-3         // amplio para silenciamiento
+	wi_step   = 1e-5         // 100 wi
+	tstop_diag = 2000
+	ws  = 0.0016
+
+    sprint(new_file, "FreqIn_vs_FreqOut_TreeDend_NetStim_ws%g_synLOC%d_synPOS%g_delay%g_therm%d.txt", \
+           ws, SYN_LOC, SYN_POS, delay, t_therm)
+    corr_out = new File()
+    corr_out.wopen(new_file)
+    corr_out.printf("# TreeDend NetStim ws=%.4g  syn_loc=%d syn_pos=%g  delay=%g  t_therm=%d\n", \
+                    ws, SYN_LOC, SYN_POS, delay, t_therm)
+    corr_out.printf("# Columnas: FreqInp[Hz]  f_in_0[Hz]  f_in_1[Hz]  wi  f_out_0[Hz]  f_out_1[Hz]\n")
+    print "Guardando en: ", new_file
+
+    freq_val = freq_min
+    while (freq_val <= freq_max + freq_step/2) {
+        FreqInp = freq_val
+
+        // PASO 1: f naturales sin inhibicion
+        wi = 0
+        min_spk = run_sim_clean()
+        f_in_0 = 0  f_in_1 = 0
+        if (spike_times[0].size() >= 2) {
+            f_in_0 = (spike_times[0].size()-1) \
+                   / (spike_times[0].x[spike_times[0].size()-1] \
+                      - spike_times[0].x[0]) * 1000
+        }
+        if (spike_times[1].size() >= 2) {
+            f_in_1 = (spike_times[1].size()-1) \
+                   / (spike_times[1].x[spike_times[1].size()-1] \
+                      - spike_times[1].x[0]) * 1000
+        }
+        print "FreqInp=", freq_val, "Hz  f_in_0=", f_in_0, " f_in_1=", f_in_1
+
+        // PASO 2: f_out para cada wi
+        wi_val = wi_min
+        while (wi_val <= wi_max + wi_step/2) {
+            wi = wi_val
+            min_spk = run_sim_clean()
+            f_out_0 = 0  f_out_1 = 0
+            if (spike_times[0].size() >= 2) {
+                f_out_0 = (spike_times[0].size()-1) \
+                        / (spike_times[0].x[spike_times[0].size()-1] - spike_times[0].x[0]) * 1000
+            }
+            if (spike_times[1].size() >= 2) {
+                f_out_1 = (spike_times[1].size()-1) \
+                        / (spike_times[1].x[spike_times[1].size()-1] - spike_times[1].x[0]) * 1000
+            }
+            print "  wi=", wi_val, " f_out_0=", f_out_0, " f_out_1=", f_out_1
+            corr_out.printf("%.6g %.6g %.6g %.6g %.6g %.6g\n", \
+                freq_val, f_in_0, f_in_1, wi_val, f_out_0, f_out_1)
+            wi_val += wi_step
+        }
+        corr_out.printf("\n")
+        corr_out.flush()
+        freq_val += freq_step
+    }
+    corr_out.close()
+    printf("Guardado en %s\n", new_file)
+}
+
+// ============================================================
+// COMO LANZAR (al final del .hoc principal):
+//   test_ws_por_freq()    // diagnostico ws
+//   freq_diagram()        // barrido completo
+// ============================================================
+// ============================================================
+// phase_diagram_compare()
+// ============================================================
+proc phase_diagram_compare() { local wi_val, freq_val, n, min_spk, \
+    csum1, csum2, csum1_sq, csum2_sq, cval1, cval2, sigma1, sigma2, \
+    Nexp_actual, cv, c2
+    freq_min  = 30
+	freq_max  = 80
+	freq_step = 2            // 26 freqs
+	wi_min    = 0
+	wi_max    = 1e-3         // amplio para silenciamiento
+	wi_step   = 1e-5         // 100 wi
+	tstop_diag = 2000
+	ws  = 0.0016
+    Nexp = 1
+    sprint(new_file, "Correlacion_TreeDend_NetStim_freq_vs_wi_ws%g_synLOC%d_synPOS%g_delay%g_therm%d.txt", \
+           ws, SYN_LOC, SYN_POS, delay, t_therm)
+    corr_out = new File()
+    corr_out.wopen(new_file)
+    corr_out.printf("# TreeDend NetStim  ws=%.4g  syn_loc=%d syn_pos=%g  delay=%.4g  t_therm=%d\n", \
+                    ws, SYN_LOC, SYN_POS, delay, t_therm)
+    corr_out.printf("# Col: freq  wi  C1  sC1  C2N  sC2N  Pearson sPearson Cseno sCseno\n")
+    print "Guardando en: ", new_file
+    freq_val = freq_min
+    while (freq_val <= freq_max + freq_step/2) {
+        FreqInp = freq_val
+        print ">>> FreqInp =", freq_val, "Hz"
+        wi_val = wi_min
+        while (wi_val <= wi_max + wi_step/2) {
+            wi = wi_val
+            min_spk = run_sim_clean()
+            print "  wi=", wi_val, " spk0=", spike_times[0].size(), " spk1=", spike_times[1].size()
+            cval1=0  cval2=0  sigma1=0  sigma2=0  Nexp_actual=0
+            if (min_spk >= 5) {
+                csum1=0  csum2=0  csum1_sq=0  csum2_sq=0
+                for n = 1, Nexp {
+                    min_spk = run_sim_clean()
+                    if (min_spk >= 5) {
+                        c2 = calc_corr_2_N()
+                        calc_phase()
+                        cv = calc_corr()
+                        csum1 += cv   csum1_sq += cv*cv
+                        csum2 += c2   csum2_sq += c2*c2
+                        Nexp_actual += 1
+                    }
+                }
+                if (Nexp_actual > 0) {
+                    cval1 = csum1/Nexp_actual
+                    cval2 = csum2/Nexp_actual
+                    print "  -> C1=", cval1, " C2N=", cval2
+                }
+            }
+            corr_out.printf("%.6g\t%.6g\t%.6g\t%.6g\t%.6g\t%.6g\t0\t0\t0\t0\n", \
+                freq_val, wi_val, cval1, sigma1, cval2, sigma2)
+            wi_val += wi_step
+        }
+        corr_out.printf("\n")
+        corr_out.flush()
+        freq_val += freq_step
+    }
+    corr_out.close()
+    printf("Guardado en %s\n", new_file)
+}
+// ============================================================
+// snippet_barrido_synpos_NetStim_Arbol.hoc
+// ------------------------------------------------------------
+// PEGAR SOLO en 2cells_NetStim_Arbol.hoc (TreeDend).
+// Version ADAPTADA a la estructura del Arbol:
+//   - synA_HI[2], synA_LO[2]  (dendritas laterales)
+//   - ncA_HI[2],  ncA_LO[2]   (NetCons hacia esas sinapsis)
+//   - Secciones latHI_0, latHI_1, latLO_0, latLO_1
+//   - SYN_LOC: 1=HI, 2=LO, 3=ambas
+//
+// Reemplaza al snippet generico. Este SI funciona con el Arbol.
+// ============================================================
+
+// ============================================================
+// recolocar_synA(pos): recrea las sinapsis exc en la nueva
+// posicion (segun SYN_LOC ya establecido).
+// ============================================================
+proc recolocar_synA() { local pos, k, dell
+    pos = $1
+    // Cell 0
+    if (SYN_LOC == 1 || SYN_LOC == 3) {
+        latHI_0 { synA_HI[0] = new Exp2Syn(pos)
+                  synA_HI[0].tau1 = 0.5
+                  synA_HI[0].tau2 = 10
+                  synA_HI[0].e    = 0 }
+        latHI_1 { synA_HI[1] = new Exp2Syn(pos)
+                  synA_HI[1].tau1 = 0.5
+                  synA_HI[1].tau2 = 10
+                  synA_HI[1].e    = 0 }
+    }
+    if (SYN_LOC == 2 || SYN_LOC == 3) {
+        latLO_0 { synA_LO[0] = new Exp2Syn(pos)
+                  synA_LO[0].tau1 = 0.5
+                  synA_LO[0].tau2 = 10
+                  synA_LO[0].e    = 0 }
+        latLO_1 { synA_LO[1] = new Exp2Syn(pos)
+                  synA_LO[1].tau1 = 0.5
+                  synA_LO[1].tau2 = 10
+                  synA_LO[1].e    = 0 }
+    }
+    // Reconectar NetCons
+    if (SYN_LOC == 1 || SYN_LOC == 3) {
+        ncA_HI[0] = new NetCon(ns, synA_HI[0], 0, 0,     ws)
+        ncA_HI[1] = new NetCon(ns, synA_HI[1], 0, delay, ws)
+    }
+    if (SYN_LOC == 2 || SYN_LOC == 3) {
+        ncA_LO[0] = new NetCon(ns, synA_LO[0], 0, 0,     ws)
+        ncA_LO[1] = new NetCon(ns, synA_LO[1], 0, delay, ws)
+    }
+}
+
+
+// ============================================================
+// barrido_synpos_freq()
+// Para cada SYN_POS del barrido:
+//   - Recrea las sinapsis en la nueva posicion (recolocar_synA)
+//   - Barre (FreqInp, wi) y guarda f_in y f_out por soma
+// Fichero de salida: uno por cada SYN_POS.
+// ============================================================
+proc barrido_synpos_freq() { local pos_val, wi_val, freq_val, min_spk, \
+                                   f_in_0, f_in_1, f_out_0, f_out_1
+    // ---- rangos ----
+    pos_min   = 0.1
+    pos_max   = 0.9
+    pos_step  = 0.2         // 5 posiciones
+    freq_min  = 30
+    freq_max  = 70
+    freq_step = 2           // 21 freqs
+    wi_min    = 0
+    wi_max    = 1e-3
+    wi_step   = 5e-5        // 21 wi
+    tstop_diag = 4000
+    // ---- fin rangos ----
+
+    pos_val = pos_min
+    while (pos_val <= pos_max + pos_step/2) {
+        SYN_POS = pos_val
+        recolocar_synA(SYN_POS)
+        printf("\n[BARRIDO_SYNPOS_FREQ] ==> SYN_POS = %g\n", SYN_POS)
+
+        sprint(new_file, \
+          "FreqIn_vs_FreqOut_NetStim_Arbol_BarridoSYNPOS_synLOC%d_synPOS%g_ws%g_delay%g_therm%d.txt", \
+          SYN_LOC, SYN_POS, ws, delay, t_therm)
+        corr_out = new File()
+        corr_out.wopen(new_file)
+        corr_out.printf("# TreeDend NetStim BarridoSYNPOS  SYN_LOC=%d SYN_POS=%g  ws=%.4g  delay=%.4g  t_therm=%d\n", \
+                        SYN_LOC, SYN_POS, ws, delay, t_therm)
+        corr_out.printf("# FreqInp[Hz]  f_in_0[Hz]  f_in_1[Hz]  wi  f_out_0[Hz]  f_out_1[Hz]\n")
+        print "Guardando en: ", new_file
+
+        freq_val = freq_min
+        while (freq_val <= freq_max + freq_step/2) {
+            FreqInp = freq_val
+
+            // Paso 1: f_in con wi=0
+            wi = 0
+            min_spk = run_sim_clean()
+            f_in_0 = 0
+            f_in_1 = 0
+            if (spike_times[0].size() >= 2) {
+                f_in_0 = (spike_times[0].size()-1) \
+                       / (spike_times[0].x[spike_times[0].size()-1] \
+                          - spike_times[0].x[0]) * 1000
+            }
+            if (spike_times[1].size() >= 2) {
+                f_in_1 = (spike_times[1].size()-1) \
+                       / (spike_times[1].x[spike_times[1].size()-1] \
+                          - spike_times[1].x[0]) * 1000
+            }
+            print "  SYN_POS=", SYN_POS, " FreqInp=", freq_val, \
+                  " f_in_0=", f_in_0
+
+            // Paso 2: barrido en wi
+            wi_val = wi_min
+            while (wi_val <= wi_max + wi_step/2) {
+                wi = wi_val
+                min_spk = run_sim_clean()
+                f_out_0 = 0
+                f_out_1 = 0
+                if (spike_times[0].size() >= 2) {
+                    f_out_0 = (spike_times[0].size()-1) \
+                            / (spike_times[0].x[spike_times[0].size()-1] \
+                               - spike_times[0].x[0]) * 1000
+                }
+                if (spike_times[1].size() >= 2) {
+                    f_out_1 = (spike_times[1].size()-1) \
+                            / (spike_times[1].x[spike_times[1].size()-1] \
+                               - spike_times[1].x[0]) * 1000
+                }
+                corr_out.printf("%.6g %.6g %.6g %.6g %.6g %.6g\n", \
+                    freq_val, f_in_0, f_in_1, wi_val, f_out_0, f_out_1)
+                wi_val = wi_val + wi_step
+            }
+            corr_out.printf("\n")
+            corr_out.flush()
+            freq_val = freq_val + freq_step
+        }
+        corr_out.close()
+        printf("[ok] Guardado %s\n", new_file)
+        pos_val = pos_val + pos_step
+    }
+    printf("\n[BARRIDO_SYNPOS_FREQ] TERMINADO.\n")
+}
+
+
+// ============================================================
+// barrido_synpos_correlacion()
+// Para cada SYN_POS:
+//   - Recrea las sinapsis
+//   - Barre (FreqInp, wi) y guarda C1, C2N, Pearson, Cseno
+// ============================================================
+proc barrido_synpos_correlacion() { local pos_val, wi_val, freq_val, n, min_spk, \
+    csum1, csum2, cval1, cval2, Nexp_actual, cv, c2
+    // ---- rangos ----
+    pos_min   = 0.1
+    pos_max   = 0.9
+    pos_step  = 0.2         // 5 posiciones
+    freq_min  = 40
+    freq_max  = 60
+    freq_step = 2           // 11 freqs (foco en resonancia)
+    wi_min    = 0
+    wi_max    = 1e-3
+    wi_step   = 5e-5        // 21 wi
+    tstop_diag = 4000
+    Nexp       = 1
+    // ---- fin rangos ----
+
+    pos_val = pos_min
+    while (pos_val <= pos_max + pos_step/2) {
+        SYN_POS = pos_val
+        recolocar_synA(SYN_POS)
+        printf("\n[BARRIDO_SYNPOS_CORR] ==> SYN_POS = %g\n", SYN_POS)
+
+        sprint(new_file, \
+          "Correlacion_Arbol_BarridoSYNPOS_NetStim_freq_vs_wi_synLOC%d_synPOS%g_ws%g_delay%g_therm%d.txt", \
+          SYN_LOC, SYN_POS, ws, delay, t_therm)
+        corr_out = new File()
+        corr_out.wopen(new_file)
+        corr_out.printf("# TreeDend NetStim BarridoSYNPOS  SYN_LOC=%d SYN_POS=%g  ws=%.4g  delay=%.4g  t_therm=%d\n", \
+                        SYN_LOC, SYN_POS, ws, delay, t_therm)
+        corr_out.printf("# Col: freq  wi  C1  C2N\n")
+        print "Guardando en: ", new_file
+
+        freq_val = freq_min
+        while (freq_val <= freq_max + freq_step/2) {
+            FreqInp = freq_val
+            print ">>> SYN_POS=", SYN_POS, " FreqInp=", freq_val
+            wi_val = wi_min
+            while (wi_val <= wi_max + wi_step/2) {
+                wi = wi_val
+                min_spk = run_sim_clean()
+                cval1 = 0
+                cval2 = 0
+                Nexp_actual = 0
+                if (min_spk >= 5) {
+                    csum1 = 0
+                    csum2 = 0
+                    for n = 1, Nexp {
+                        min_spk = run_sim_clean()
+                        if (min_spk >= 5) {
+                            c2 = calc_corr_2_N()
+                            calc_phase()
+                            cv = calc_corr()
+                            csum1 = csum1 + cv
+                            csum2 = csum2 + c2
+                            Nexp_actual = Nexp_actual + 1
+                        }
+                    }
+                    if (Nexp_actual > 0) {
+                        cval1 = csum1 / Nexp_actual
+                        cval2 = csum2 / Nexp_actual
+                    }
+                }
+                corr_out.printf("%.6g %.6g %.6g %.6g\n", \
+                    freq_val, wi_val, cval1, cval2)
+                wi_val = wi_val + wi_step
+            }
+            corr_out.printf("\n")
+            corr_out.flush()
+            freq_val = freq_val + freq_step
+        }
+        corr_out.close()
+        printf("[ok] Guardado %s\n", new_file)
+        pos_val = pos_val + pos_step
+    }
+    printf("\n[BARRIDO_SYNPOS_CORR] TERMINADO.\n")
+}
+
+// ==========================================================
+// snippet_multi_synapsis_arbol.hoc
+// ----------------------------------------------------------
+// N sinapsis excitatorias AMPA distribuidas en la dendrita
+// lateral del ARBOL (latHI y/o latLO segun SYN_LOC),
+// alimentadas por el NetStim global `ns` del anfitrion.
+//
+// El peso ws_total se reparte a partes iguales:
+//   ws_each = ws_total / NSYN_MULTI
+// para comparar N=1,2,4,8 a igual carga excitatoria total.
+//
+// USO:
+//   crear_multi_synapsis_arbol(4, 0.1, 0.9)
+//   barrido_wi_multi_arbol(0, 1e-3, 21, 50, 0.0016)
+// o de una sola vez:
+//   barrido_nsyn_arbol_comparativo(50, 0.0016, 0, 1e-3, 21)
+// ==========================================================
+
+objref synHI_M0[20], synHI_M1[20]
+objref synLO_M0[20], synLO_M1[20]
+objref ncHI_M0[20],  ncHI_M1[20]
+objref ncLO_M0[20],  ncLO_M1[20]
+NSYN_MULTI = 0
+POS_MIN_M  = 0.5
+POS_MAX_M  = 0.5
+
+// ---------- crear N sinapsis en el Arbol ----------
+// $1 = N   $2 = pos_min   $3 = pos_max
+// SYN_LOC (global) : 1=HI, 2=LO, 3=ambas
+proc crear_multi_synapsis_arbol() { local i, pos, dx
+    NSYN_MULTI = $1
+    if (NSYN_MULTI > 20) { NSYN_MULTI = 20 }
+    POS_MIN_M = $2
+    POS_MAX_M = $3
+    if (NSYN_MULTI == 1) {
+        dx = 0
+    } else {
+        dx = (POS_MAX_M - POS_MIN_M) / (NSYN_MULTI - 1)
+    }
+    for i = 0, NSYN_MULTI - 1 {
+        pos = POS_MIN_M + i * dx
+        if (SYN_LOC == 1 || SYN_LOC == 3) {
+            latHI_0 { synHI_M0[i] = new Exp2Syn(pos)
+                      synHI_M0[i].tau1 = 0.5
+                      synHI_M0[i].tau2 = 10
+                      synHI_M0[i].e    = 0 }
+            latHI_1 { synHI_M1[i] = new Exp2Syn(pos)
+                      synHI_M1[i].tau1 = 0.5
+                      synHI_M1[i].tau2 = 10
+                      synHI_M1[i].e    = 0 }
+            ncHI_M0[i] = new NetCon(ns, synHI_M0[i], 0, 0,     0)
+            ncHI_M1[i] = new NetCon(ns, synHI_M1[i], 0, delay, 0)
+        }
+        if (SYN_LOC == 2 || SYN_LOC == 3) {
+            latLO_0 { synLO_M0[i] = new Exp2Syn(pos)
+                      synLO_M0[i].tau1 = 0.5
+                      synLO_M0[i].tau2 = 10
+                      synLO_M0[i].e    = 0 }
+            latLO_1 { synLO_M1[i] = new Exp2Syn(pos)
+                      synLO_M1[i].tau1 = 0.5
+                      synLO_M1[i].tau2 = 10
+                      synLO_M1[i].e    = 0 }
+            ncLO_M0[i] = new NetCon(ns, synLO_M0[i], 0, 0,     0)
+            ncLO_M1[i] = new NetCon(ns, synLO_M1[i], 0, delay, 0)
+        }
+    }
+    printf("[multi_syn_arbol] N=%d SYN_LOC=%d pos=[%.2f..%.2f]\n", \
+           NSYN_MULTI, SYN_LOC, POS_MIN_M, POS_MAX_M)
+}
+
+// ---------- fijar ws_total (reparto uniforme) ----------
+proc fijar_ws_multi() { local i, ws_each
+    ws_each = $1 / NSYN_MULTI
+    for i = 0, NSYN_MULTI - 1 {
+        if (SYN_LOC == 1 || SYN_LOC == 3) {
+            ncHI_M0[i].weight = ws_each
+            ncHI_M1[i].weight = ws_each
+        }
+        if (SYN_LOC == 2 || SYN_LOC == 3) {
+            ncLO_M0[i].weight = ws_each
+            ncLO_M1[i].weight = ws_each
+        }
+    }
+}
+
+// ---------- desactivar la sinapsis mono del anfitrion ----------
+proc desactivar_mono_syn() {
+    if (SYN_LOC == 1 || SYN_LOC == 3) {
+        ncA_HI[0].weight = 0
+        ncA_HI[1].weight = 0
+    }
+    if (SYN_LOC == 2 || SYN_LOC == 3) {
+        ncA_LO[0].weight = 0
+        ncA_LO[1].weight = 0
+    }
+}
+
+// ============================================================
+// run_sim_multi(): version ligera para el barrido multi-sinapsis.
+// - NO recrea ncA_HI/ncA_LO (respeta la desactivacion previa).
+// - NO graba vvec ni tvec (solo spike_times).
+// - Recomienda calc_corr_2_N() (barre a ddt=0.1 ms).
+// ============================================================
+func run_sim_multi() { local k, min_spk, first_valid
+    if (fv.isopen()) { fv.close() }
+    ns.number   = 1000000
+    ns.interval = 1000 / FreqInp
+    ns.start    = 0
+    // Reconectar SOLO la inhibicion reciproca con el wi actual
+    soma[0] nci[0] = new NetCon(&v(.5), syni[1], 0, 0, wi)
+    soma[1] nci[1] = new NetCon(&v(.5), syni[0], 0, 0, wi)
+    for k = 0, 1 { ic[k].amp = 0  ic[k].dur = 0 }
+    // Solo grabamos spike_times (evitamos vvec y tvec pesados).
+    // Creamos un tvec MINIMO por si calc_corr_2_N lo lee.
+    tvec = new Vector()
+    tvec.append(0)
+    for k = 0, 1 {
+        spike_times[k] = new Vector()
+        soma[k] {
+            spike_rec[k] = new NetCon(&v(0.5), nullobj, 0, 0, 0)
+            spike_rec[k].record(spike_times[k])
+        }
+    }
+    finitialize(-65)
+    tstop = t_therm + tstop_diag
+    run()
+    for k = 0, 1 {
+        first_valid = spike_times[k].indwhere(">=", t_therm)
+        if (first_valid > 0) {
+            spike_times[k].remove(0, first_valid - 1)
+        } else if (first_valid < 0) {
+            spike_times[k].resize(0)
+        }
+    }
+    min_spk = spike_times[0].size()
+    if (spike_times[1].size() < min_spk) { min_spk = spike_times[1].size() }
+    return min_spk
+}
+
+// ============================================================
+// barrido_freq_wi_multi_arbol_fast()
+// Usa run_sim_multi + solo C2N. Mucho mas rapido.
+// $1=ws_total  $2=freq_min  $3=freq_max  $4=freq_step
+// $5=wi_min    $6=wi_max    $7=wi_step
+// ============================================================
+proc barrido_freq_wi_multi_arbol_fast() { local ic, wi_val, freq_val, min_spk, \
+                                                f0, f1, c2v, ws_total
+    ws_total   = $1
+    tstop_diag = 2000
+    for ic = 0, 4 {
+        // 5 configs: N=4 fijo, distintas posiciones (base -> punta)
+        if (ic == 0) {
+            crear_multi_synapsis_arbol(4, 0.00, 0.20)   // base
+        } else {
+            if (ic == 1) {
+                crear_multi_synapsis_arbol(4, 0.20, 0.40)
+            } else {
+                if (ic == 2) {
+                    crear_multi_synapsis_arbol(4, 0.40, 0.60)   // centro
+                } else {
+                    if (ic == 3) {
+                        crear_multi_synapsis_arbol(4, 0.60, 0.80)
+                    } else {
+                        crear_multi_synapsis_arbol(4, 0.80, 1.00)   // punta
+                    }
+                }
+            }
+        }
+        fijar_ws_multi(ws_total)
+        desactivar_mono_syn()
+        sprint(new_file, \
+          "MultiSyn_Arbol_FreqWi_config%d_Nsyn%d_synLOC%d_wstotal%g.txt", \
+          ic, NSYN_MULTI, SYN_LOC, ws_total)
+        corr_out = new File()
+        corr_out.wopen(new_file)
+        corr_out.printf("# Arbol MultiSyn FreqWi  config=%d  Nsyn=%d  SYN_LOC=%d  pos=[%.2f..%.2f]\n", \
+                        ic, NSYN_MULTI, SYN_LOC, POS_MIN_M, POS_MAX_M)
+        corr_out.printf("# ws_total=%g  ws_each=%g\n", \
+                        ws_total, ws_total/NSYN_MULTI)
+        corr_out.printf("# Col: freq  wi  C2N  f_out_0  f_out_1\n")
+        print "==> config=", ic, " N=", NSYN_MULTI, " pos=[", POS_MIN_M, "..", POS_MAX_M, "]"
+        freq_val = $2
+        while (freq_val <= $3 + $4/2) {
+            FreqInp     = freq_val
+            ns.interval = 1000 / freq_val
+            printf("  freq=%g Hz\n", freq_val)
+            wi_val = $5
+            while (wi_val <= $6 + $7/2) {
+                wi = wi_val
+                min_spk = run_sim_multi()
+                f0 = 0  f1 = 0  c2v = 0
+                if (spike_times[0].size() >= 2) {
+                    f0 = (spike_times[0].size()-1) \
+                       / (spike_times[0].x[spike_times[0].size()-1] \
+                          - spike_times[0].x[0]) * 1000
+                }
+                if (spike_times[1].size() >= 2) {
+                    f1 = (spike_times[1].size()-1) \
+                       / (spike_times[1].x[spike_times[1].size()-1] \
+                          - spike_times[1].x[0]) * 1000
+                }
+                if (min_spk >= 5) {
+                    c2v = calc_corr_2_N()
+                }
+                corr_out.printf("%.4g\t%.6e\t%.4f\t%.3f\t%.3f\n", \
+                                freq_val, wi_val, c2v, f0, f1)
+                wi_val = wi_val + $7
+            }
+            corr_out.printf("\n")
+            corr_out.flush()
+            freq_val = freq_val + $4
+        }
+        corr_out.close()
+        printf("[ok] %s\n", new_file)
+    }
+    printf("\n[BARRIDO_FREQWI_MULTI_ARBOL_FAST] TERMINADO.\n")
+}
+// ============================================================
+// Solo config 2 (centro): N=4 sinapsis en pos [0.40..0.60] en latHI
+// ============================================================
+proc barrido_config2_arbol() { local wi_val, freq_val, min_spk, f0, f1, c2v
+    tstop_diag = 2000
+    crear_multi_synapsis_arbol(4, 0.40, 0.60)
+    fijar_ws_multi(0.0016)
+    desactivar_mono_syn()
+    sprint(new_file, \
+      "MultiSyn_Arbol_FreqWi_config2_Nsyn%d_synLOC%d_wstotal%g.txt", \
+      NSYN_MULTI, SYN_LOC, 0.0016)
+    corr_out = new File()
+    corr_out.wopen(new_file)
+    corr_out.printf("# Arbol MultiSyn FreqWi  config=2  Nsyn=%d  SYN_LOC=%d  pos=[%.2f..%.2f]\n", \
+                    NSYN_MULTI, SYN_LOC, POS_MIN_M, POS_MAX_M)
+    corr_out.printf("# ws_total=%g  ws_each=%g\n", 0.0016, 0.0016/NSYN_MULTI)
+    corr_out.printf("# Col: freq  wi  C2N  f_out_0  f_out_1\n")
+    print "==> config=2 (centro)  pos=[0.40..0.60]"
+    freq_val = 40
+    while (freq_val <= 55 + 0.5) {
+        FreqInp     = freq_val
+        ns.interval = 1000 / freq_val
+        printf("  freq=%g Hz\n", freq_val)
+        wi_val = 0
+        while (wi_val <= 1e-3 + 2.5e-5) {
+            wi = wi_val
+            min_spk = run_sim_multi()
+            f0 = 0  f1 = 0  c2v = 0
+            if (spike_times[0].size() >= 2) {
+                f0 = (spike_times[0].size()-1) \
+                   / (spike_times[0].x[spike_times[0].size()-1] \
+                      - spike_times[0].x[0]) * 1000
+            }
+            if (spike_times[1].size() >= 2) {
+                f1 = (spike_times[1].size()-1) \
+                   / (spike_times[1].x[spike_times[1].size()-1] \
+                      - spike_times[1].x[0]) * 1000
+            }
+            if (min_spk >= 5) { c2v = calc_corr_2_N() }
+            corr_out.printf("%.4g\t%.6e\t%.4f\t%.3f\t%.3f\n", \
+                            freq_val, wi_val, c2v, f0, f1)
+            wi_val = wi_val + 5e-5
+        }
+        corr_out.printf("\n")
+        corr_out.flush()
+        freq_val = freq_val + 1
+    }
+    corr_out.close()
+    printf("[ok] %s\n", new_file)
+}
+// ============================================================
+// INSTRUCCIONES DE USO
+// ------------------------------------------------------------
+// 1. Borra el snippet ANTIGUO (el generico ncA[k]) del fichero
+//    2cells_NetStim_Arbol.hoc — probablemente esta despues de
+//    la seccion "PASADA INICIAL Y BARRIDO" y a partir de la
+//    linea ~590. Elimina TODO desde
+//         "// snippet_barrido_synpos_NetStim.hoc"  (o similar)
+//    hasta el final del fichero.
+//
+// 2. Pega ESTE snippet completo al final de 2cells_NetStim_Arbol.hoc.
+//
+// 3. Al final del fichero, descomenta la funcion que quieras lanzar:
+//        //barrido_synpos_freq()
+//        //barrido_synpos_correlacion()
+//
+// TIEMPOS ESTIMADOS (defaults):
+//   barrido_synpos_freq        : 5 pos * 21 freq * 21 wi = 2205 sims ~= 2 h
+//   barrido_synpos_correlacion : 5 pos * 11 freq * 21 wi = 1155 sims ~= 1 h
+//
+// SALIDA: un fichero .txt por SYN_POS con SYN_POS en el nombre.
+// ============================================================
+
+// ============================================================
+// INSTRUCCIONES DE USO
+// ------------------------------------------------------------
+// 1. Borra el snippet ANTIGUO (el generico ncA[k]) del fichero
+//    2cells_NetStim_Arbol.hoc — probablemente esta despues de
+//    la seccion "PASADA INICIAL Y BARRIDO" y a partir de la
+//    linea ~590. Elimina TODO desde
+//         "// snippet_barrido_synpos_NetStim.hoc"  (o similar)
+//    hasta el final del fichero.
+//
+// 2. Pega ESTE snippet completo al final de 2cells_NetStim_Arbol.hoc.
+//
+// 3. Al final del fichero, descomenta la funcion que quieras lanzar:
+//        //barrido_synpos_freq()
+//        //barrido_synpos_correlacion()
+//
+// TIEMPOS ESTIMADOS (defaults):
+//   barrido_synpos_freq        : 5 pos * 21 freq * 21 wi = 2205 sims ~= 2 h
+//   barrido_synpos_correlacion : 5 pos * 11 freq * 21 wi = 1155 sims ~= 1 h
+//
+// SALIDA: un fichero .txt por SYN_POS con SYN_POS en el nombre.
+// ============================================================
+// ============================================================
+// PASADA INICIAL
+// ============================================================
+tvec = new Vector()
+tvec.record(&t)
+for k = 0, 1 {
+    vvec[k] = new Vector()
+    soma[k] vvec[k].record(&v(0.5))
+}
+sprint(new_file, "Trayectorias_TreeDend_NetStim_freq%g_wi%g_synLOC%d.txt", FreqInp, wi, SYN_LOC)
+fv = new File()
+fv.wopen(new_file)
+fv.printf("# t  soma[0].v  soma[1].v   FreqInp=%g wi=%g ws=%g SYN_LOC=%d SYN_POS=%g\n", \
+          FreqInp, wi, ws, SYN_LOC, SYN_POS)
+ns.start = 0
+tstop = t_therm + 1000
+print "Lanzando pasada inicial (", tstop, "ms)..."
+run()
+fv.close()
+print "Pasada inicial completada. Spikes: soma0=", spike_times[0].size(), " soma1=", spike_times[1].size()
+
+tstop_diag = 4000
+//barrido_synpos_correlacion()
+//barrido_synpos_freq()
+//phase_diagram_compare()
+//freq_diagram()
+//test_ws_por_freq()
+// $1=fin  $2=ws_total  $3=wi_min  $4=wi_max  $5=Nwi
+//barrido_nsyn_arbol_comparativo(50, 0.0016, 0, 1e-3, 21)
+SYN_LOC = 1
+// ws_total, freq_min, freq_max, freq_step, wi_min, wi_max, wi_step
+//barrido_freq_wi_multi_arbol_fast(0.0016, 40, 55, 1, 0, 1e-3, 5e-5)
+//barrido_config2_arbol()

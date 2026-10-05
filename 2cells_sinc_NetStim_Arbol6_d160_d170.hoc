@@ -1,0 +1,181 @@
+load_file("nrngui.hoc")
+load_file("Arbol6_morfologia.hoc")
+cvode_active(1)
+cvode.atol(1e-5)
+celsius=34
+v_init=-65
+PI=3.141592653589793
+// um, ms, Hz, uS. Two excitatory synapses per cell, each with ws_total/2.
+d0=100
+d1=160
+wi=0.0005
+ws_total=0.0016
+FreqInp=50
+t_therm=500
+tstop_diag=2000
+Nrep=1
+d1_min=180
+d1_max=180
+d1_step=10
+wi_min=0
+wi_max=0.001
+wi_step=0.00005
+// Deterministic repeats: no spatial randomness with one synapse per symmetric side.
+objref cell[2], exc[2][2], nexc[2][2], inh[2], ni[2], ns
+objref spike_times[2], spike_rec[2], nil, tv, vv[2], shape
+objref raw, summary, sites, traj, valsC, valsF0, valsF1
+strdef out_prefix, fname
+out_prefix="Arbol6_resultados_d160_d170_1rep"
+for k=0,1 { cell[k]=new Arbol6() }
+cell[0].configure(-180,0,d0)
+cell[1].configure(180,2,d1)
+ns=new NetStim()
+{ ns.start=0 ns.interval=1000/FreqInp ns.number=1e9 ns.noise=0 }
+for k=0,1 {
+ cell[k].soma {
+  inh[k]=new ExpSyn(0.5)
+  inh[k].tau=30 inh[k].e=-80
+  spike_times[k]=new Vector()
+  spike_rec[k]=new NetCon(&v(0.5),nil,0,0,0)
+  spike_rec[k].record(spike_times[k])
+ }
+}
+cell[0].soma ni[0]=new NetCon(&v(0.5),inh[1],0,0,wi)
+cell[1].soma ni[1]=new NetCon(&v(0.5),inh[0],0,0,wi)
+proc colocar_sinapsis() { local k,j,b,actual
+ for k=0,1 for j=0,1 { nexc[k][j]=nil exc[k][j]=nil }
+ cell[0].configure(-180,0,d0)
+ cell[1].configure(180,2,d1)
+ for k=0,1 {
+  cell[k].soma distance(0,0.5)
+  for j=0,1 {
+   b=4*k+j
+   cell[k].branch[b] { exc[k][j]=new Exp2Syn(1) actual=distance(1) }
+   if (abs(actual-cell[k].target_distance)>0.001) execerror("Incorrect path distance", "")
+   exc[k][j].tau1=0.5 exc[k][j].tau2=10 exc[k][j].e=0
+   nexc[k][j]=new NetCon(ns,exc[k][j],0,0,ws_total/2)
+  }
+ }
+}
+colocar_sinapsis()
+proc mostrar_morfologia() { local k,j
+ shape=new Shape()
+ shape.show(0)
+ for k=0,1 {
+  for j=0,1 shape.point_mark(exc[k][j],2,"O",12)
+  shape.point_mark(inh[k],3,"O",10)
+ }
+}
+proc run_sim_clean() { local k,idx
+ ni[0].weight[0]=wi ni[1].weight[0]=wi
+ ns.interval=1000/FreqInp
+ tv=new Vector() tv.record(&t,0.1)
+ for k=0,1 { vv[k]=new Vector() cell[k].soma vv[k].record(&v(0.5),0.1) }
+ tstop=t_therm+tstop_diag
+ run()
+ for k=0,1 {
+  idx=spike_times[k].indwhere(">=",t_therm)
+  if (idx<0) { spike_times[k].resize(0) } else {
+   if (idx>0) spike_times[k].remove(0,idx-1)
+  }
+  idx=spike_times[k].indwhere(">=",tstop)
+  if (idx>=0) spike_times[k].resize(idx)
+ }
+}
+// <cos(phi1-phi0)>; linear interspike phases. Exact integral over common support.
+// -9999 = undefined; never extrapolate phase outside measured spike intervals.
+corr_duration=0
+func calc_corr_2_N() { local i,j,a,b,e0,e1,left,right,p0,p1,w,delta,area
+ corr_duration=0
+ if (spike_times[0].size()<2 || spike_times[1].size()<2) return -9999
+ a=spike_times[0].x[0]
+ if (spike_times[1].x[0]>a) a=spike_times[1].x[0]
+ b=spike_times[0].x[spike_times[0].size()-1]
+ if (spike_times[1].x[spike_times[1].size()-1]<b) b=spike_times[1].x[spike_times[1].size()-1]
+ if (b<=a) return -9999
+ i=0 j=0 area=0 left=a
+ while (left<b-1e-10) {
+  while (spike_times[0].x[i+1]<=left && i<spike_times[0].size()-2) i+=1
+  while (spike_times[1].x[j+1]<=left && j<spike_times[1].size()-2) j+=1
+  e0=spike_times[0].x[i+1] e1=spike_times[1].x[j+1]
+  right=e0
+  if (e1<right) right=e1
+  if (b<right) right=b
+  p0=2*PI/(e0-spike_times[0].x[i]) p1=2*PI/(e1-spike_times[1].x[j])
+  delta=p1*(left-spike_times[1].x[j])-p0*(left-spike_times[0].x[i])
+  w=p1-p0
+  if (abs(w)<1e-8) { area+=cos(delta)*(right-left) } else {
+   area+=(sin(delta+w*(right-left))-sin(delta))/w
+  }
+  left=right
+ }
+ corr_duration=b-a
+ return area/corr_duration
+}
+proc guardar_posiciones() { local k,j,b,x,y,side,d
+ for k=0,1 {
+  d=d0
+  if (k==1) d=d1
+  y=50+100*k
+  for j=0,1 {
+   b=4*k+j side=2*j-1
+   x=cell[k].xpos+side*(d-y)/sqrt(2)
+   cell[k].soma distance(0,0.5)
+   cell[k].branch[b] sites.printf("%g %d %d %d %.12g %.12g %.12g\n",d1,k,j,b,distance(1),x,y+(d-y)/sqrt(2))
+  }
+ }
+}
+func safe_mean() { if ($o1.size()==0) return -9999 return $o1.mean() }
+func safe_sd() { local j,m,s
+ if ($o1.size()<2) return -9999
+ m=$o1.mean() s=0
+ for j=0,$o1.size()-1 s+=($o1.x[j]-m)^2
+ return sqrt(s/($o1.size()-1))
+}
+proc barrido_d1_wi() { local id,iw,rep,c,f0,f1,nd,nw
+ if (d0<=50 || d0>=200 || d1_min<=150 || d1_max>=300) execerror("Distances outside selected branches", "")
+ if (d1_step<=0 || wi_step<=0 || d1_max<d1_min || wi_max<wi_min || Nrep<1 || tstop_diag<=0) execerror("Invalid sweep parameters", "")
+ raw=new File() summary=new File() sites=new File()
+ sprint(fname,"%s_repeticiones.txt",out_prefix) raw.wopen(fname)
+ sprint(fname,"%s_resumen.txt",out_prefix) summary.wopen(fname)
+ sprint(fname,"%s_sinapsis.txt",out_prefix) sites.wopen(fname)
+ raw.printf("# d0_um d1_um wi_uS rep C f0_Hz f1_Hz C_valid overlap_ms\n")
+ summary.printf("# Deterministic repeats; -9999=undefined (SD requires 2 samples)\n")
+ summary.printf("# ws_total=%g FreqInp=%g t_therm=%g duration=%g Nrep=%d\n",ws_total,FreqInp,t_therm,tstop_diag,Nrep)
+ summary.printf("# d0_um d1_um wi_uS C_mean C_sd f0_mean f0_sd f1_mean f1_sd n_C n_reps\n")
+ sites.printf("# d1_um cell syn branch path_um x_um y_um\n")
+ nd=int((d1_max-d1_min)/d1_step+1e-6) nw=int((wi_max-wi_min)/wi_step+1e-6)
+ for id=0,nd {
+  d1=d1_min+id*d1_step colocar_sinapsis() guardar_posiciones()
+  for iw=0,nw {
+   wi=wi_min+iw*wi_step
+   valsC=new Vector() valsF0=new Vector() valsF1=new Vector()
+   for rep=1,Nrep {
+    run_sim_clean() c=calc_corr_2_N()
+    f0=1000*spike_times[0].size()/tstop_diag f1=1000*spike_times[1].size()/tstop_diag
+    valsF0.append(f0) valsF1.append(f1)
+    if (c!=-9999) valsC.append(c)
+    raw.printf("%g %g %.9g %d %.12g %.9g %.9g %d %.9g\n",d0,d1,wi,rep,c,f0,f1,c!=-9999,corr_duration)
+   }
+   summary.printf("%g %g %.9g %.12g %.9g %.9g %.9g %.9g %.9g %d %d\n",d0,d1,wi,safe_mean(valsC),safe_sd(valsC),safe_mean(valsF0),safe_sd(valsF0),safe_mean(valsF1),safe_sd(valsF1),valsC.size(),Nrep)
+   raw.flush() summary.flush()
+   printf("d1=%g wi=%g C=%g f0=%g f1=%g (%d/%d valid C)\n",d1,wi,safe_mean(valsC),safe_mean(valsF0),safe_mean(valsF1),valsC.size(),Nrep)
+  }
+ }
+ raw.close() summary.close() sites.close()
+}
+proc diagnostico() { local i
+ colocar_sinapsis() run_sim_clean()
+ traj=new File() sprint(fname,"%s_trayectoria.txt",out_prefix) traj.wopen(fname)
+ traj.printf("# t_ms V0_mV V1_mV; d0=%g d1=%g wi=%g\n",d0,d1,wi)
+ for i=0,tv.size()-1 traj.printf("%.9g %.9g %.9g\n",tv.x[i],vv[0].x[i],vv[1].x[i])
+ traj.close() mostrar_morfologia()
+ printf("C=%g; f0=%g Hz; f1=%g Hz\n",calc_corr_2_N(),1000*spike_times[0].size()/tstop_diag,1000*spike_times[1].size()/tstop_diag)
+}
+// Barrido adicional: 160 y 170 um; 21 pesos por distancia.
+// Conserva Nrep=1 del archivo actual. Para diez repeticiones, cambiar Nrep arriba.
+// Las dendritas superiores empiezan a 150 um: sitios a 10 y 20 um de la bifurcacion.
+// Abrir este archivo directamente en una sesion nueva de NEURON.
+print "Arbol6: d1=160,170 um; iniciando barrido."
+barrido_d1_wi()
+print "Barrido d1=160,170 um terminado."

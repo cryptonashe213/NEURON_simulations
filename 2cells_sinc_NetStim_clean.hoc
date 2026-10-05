@@ -1,0 +1,748 @@
+// ============================================================
+// 2cells_sinc_NetStim_clean.hoc
+// Barrido: frecuencia vs wi con NetStim (ws fijo)
+// Con tiempo de termalizacion t_therm
+// ============================================================
+
+load_file("nrngui.hoc")
+load_file("2cells.hoc")
+
+// --- Canales ionicos y propiedades pasivas ---
+forall insert pas
+forall insert kdr
+forall insert nax
+
+forall g_pas = 0.0001
+forall e_pas  = -65
+forall ena    = 55
+forall ek     = -90
+
+forall gbar_nax    = 0.04
+forall gkdrbar_kdr = 0.04
+ 
+celsius = 34
+PI      = 3.14159265358979
+
+// --- Parametros globales ---
+ws       = 0.0002
+wi       = 2.5e-5
+FreqInp  = 47
+iampfact = 1
+delay    = 20
+Idel     = 0
+N        = 2
+t_therm  = 4000   // ms de termalizacion antes de registrar datos
+
+// --- Archivo de voltaje (usado por advance) ---
+objref fv
+fv = new File()
+
+// --- Objetos de simulacion ---
+objref syni[2], nci[2], ic[2]
+objref synA[2], ncA[2], ns
+objref phi[2], corr_out
+objref ispk, tspkprec, tspknext, ph
+objref spike_times[2], spike_rec[2], vvec[2], tvec
+objref nullobj
+strdef new_file
+
+// ============================================================
+// NETSTIM: fuente de pulsos excitatoria compartida
+// ============================================================
+ns           = new NetStim(0.5)
+ns.number    = 1000000
+ns.interval  = 1000/FreqInp
+ns.start     = 10
+ns.noise     = 0
+
+// ============================================================
+// INICIALIZACION DE SOMAS
+// ============================================================
+for k = 0, 1 {
+    soma[k] {
+        syni[k]     = new ExpSyn(0.5)
+        syni[k].tau = 30
+        syni[k].e   = -80
+
+        synA[k]      = new Exp2Syn(0.5)
+        synA[k].tau1 = 0.5
+        synA[k].tau2 = 10
+        synA[k].e    = 0
+
+        dell = 0
+        if (k == 1) { dell = delay }
+        ncA[k] = new NetCon(ns, synA[k], 0, dell, ws)
+
+        ic[k]     = new IClamp(0.5)
+        ic[k].amp = 0
+        ic[k].dur = 0
+        ic[k].del = 0
+
+        spike_times[k] = new Vector()
+        spike_rec[k]   = new NetCon(&v(0.5), nullobj, 0, 0, 0)
+        spike_rec[k].record(spike_times[k])
+    }
+}
+
+for k = 0, 1 {
+    m = k+1
+    if (k == 1) { m = 0 }
+    soma[k] nci[k] = new NetCon(&v(.5), syni[m], 0, 0, wi)
+}
+
+// ============================================================
+// advance(): escribe voltaje solo si fv esta abierto
+// ============================================================
+proc advance() {
+    fadvance()
+    if (fv.isopen()) {
+        fv.printf("%g %g %g \n", t, soma[0].v, soma[1].v)
+    }
+}
+
+// ============================================================
+// run_sim_clean(): configura parametros, graba y corre
+// Incluye t_therm ms de termalizacion al inicio
+// Devuelve minimo de spikes entre los dos somas (post-therm)
+// ============================================================
+func run_sim_clean() { local k, min_spk, dell, first_valid, t_idx
+    if (fv.isopen()) { fv.close() }
+
+    // Actualizar NetStim
+    // El NetStim arranca desde t=0 para cubrir toda la termalizacion
+    ns.number   = 1000000
+    ns.interval = 1000 / FreqInp
+    ns.start    = 0   // arranca desde el inicio para termalizar
+
+    // Actualizar NetCon excitatorios con delay correcto
+    for k = 0, 1 {
+        dell = 0
+        if (k == 1) { dell = delay }
+        ncA[k] = new NetCon(ns, synA[k], 0, dell, ws)
+    }
+
+    // Actualizar pesos inhibitorios
+    for k = 0, 1 {
+        m = k+1
+        if (k == 1) { m = 0 }
+        soma[k] nci[k] = new NetCon(&v(.5), syni[m], 0, 0, wi)
+    }
+
+    // IClamp apagado
+    for k = 0, 1 {
+        ic[k].amp = 0
+        ic[k].dur = 0
+    }
+
+    // Reiniciar vectores de registro
+    tvec = new Vector()
+    tvec.record(&t)
+    for k = 0, 1 {
+        spike_times[k] = new Vector()
+        vvec[k]        = new Vector()
+        soma[k] {
+            vvec[k].record(&v(0.5))
+            spike_rec[k] = new NetCon(&v(0.5), nullobj, 0, 0, 0)
+            spike_rec[k].record(spike_times[k])
+        }
+    }
+
+    finitialize(-65)
+    tstop = t_therm + tstop_diag   // duracion total = termalizacion + util
+    run()
+
+    // --- Recortar tvec y vvec: quedarse solo con t >= t_therm ---
+    t_idx = tvec.indwhere(">=", t_therm)
+    if (t_idx > 0) {
+        tvec.remove(0, t_idx - 1)
+        for k = 0, 1 { vvec[k].remove(0, t_idx - 1) }
+    }
+
+    // --- Recortar spike_times: quedarse solo con spikes >= t_therm ---
+    for k = 0, 1 {
+        first_valid = spike_times[k].indwhere(">=", t_therm)
+        if (first_valid > 0) {
+            spike_times[k].remove(0, first_valid - 1)
+        } else if (first_valid < 0) {
+            // No hay ningun spike post-termalizacion: vaciar el vector
+            spike_times[k].resize(0)
+        }
+    }
+
+    min_spk = spike_times[0].size()
+    return min_spk
+}
+
+// ============================================================
+// calc_phase()
+// ============================================================
+proc calc_phase() { local k, i, j, t_curr, t_prev, t_next
+    for k = 0, 1 {
+        phi[k] = new Vector(tvec.size())
+        phi[k].fill(-1)
+        for j = 0, tvec.size()-1 {
+            t_curr = tvec.x[j]
+            for i = 0, spike_times[k].size()-2 {
+                if (t_curr >= spike_times[k].x[i] && t_curr < spike_times[k].x[i+1]) {
+                    t_prev      = spike_times[k].x[i]
+                    t_next      = spike_times[k].x[i+1]
+                    phi[k].x[j] = 2*PI * (t_curr - t_prev) / (t_next - t_prev)
+                }
+            }
+        }
+    }
+}
+
+// ============================================================
+// calc_corr(): C1 coseno de fase
+// ============================================================
+func calc_corr() { local j, tin_idx, tfin_idx, sum, dt, t_range, dphi
+    tin_idx  = tvec.indwhere(">=", spike_times[0].x[1])
+    tfin_idx = tvec.indwhere(">=", spike_times[0].x[spike_times[0].size()-2])
+    if (tin_idx  < 0) { tin_idx  = 0 }
+    if (tfin_idx < 0) { tfin_idx = tvec.size()-1 }
+    t_range = tvec.x[tfin_idx] - tvec.x[tin_idx]
+    if (t_range <= 0) { return -9999 }
+    sum = 0
+    dt  = tvec.x[1] - tvec.x[0]
+    for j = tin_idx, tfin_idx-1 {
+        if (phi[0].x[j] >= 0 && phi[1].x[j] >= 0) {
+            dphi = phi[1].x[j] - phi[0].x[j]
+            sum  = sum + cos(dphi) * dt
+        }
+    }
+    return sum / t_range
+}
+
+// ============================================================
+// calc_corr_2_N(): C2N metodo de fase continua
+// ============================================================
+func calc_corr_2_N() { local l, tmax, ttt, ddt, cs_med, t_range
+    ispk     = new Vector(N)
+    tspkprec = new Vector(N)
+    tspknext = new Vector(N)
+    ph       = new Vector(N)
+
+    tmax = spike_times[0].x[spike_times[0].size()-1]
+    for l = 1, N-1 {
+        if (spike_times[l].x[spike_times[l].size()-1] < tmax) {
+            tmax = spike_times[l].x[spike_times[l].size()-1]
+        }
+    }
+
+    ddt = 0.1
+    for l = 0, N-1 {
+        ispk.x[l]     = 0
+        tspkprec.x[l] = spike_times[l].x[0]
+        tspknext.x[l] = spike_times[l].x[1]
+        ph.x[l]       = 0
+    }
+
+    cs_med = 0
+    ttt    = tvec.x[0]
+    while (ttt < tmax) {
+        for l = 0, N-1 {
+            if (spike_times[l].size() > 1) {
+                if (ttt >= tspknext.x[l]) {
+                    if (ispk.x[l] + 1 < spike_times[l].size() - 1) {
+                        ispk.x[l]     = ispk.x[l] + 1
+                        tspkprec.x[l] = spike_times[l].x[ispk.x[l]]
+                        tspknext.x[l] = spike_times[l].x[ispk.x[l] + 1]
+                    }
+                }
+                if (tspkprec.x[l] != tspknext.x[l] && ttt < tspknext.x[l]) {
+                    ph.x[l] = 2*PI * (ttt - tspkprec.x[l]) / (tspknext.x[l] - tspkprec.x[l])
+                }
+            }
+        }
+        cs_med = cs_med + cos(ph.x[1] - ph.x[0]) * ddt
+        ttt    = ttt + ddt
+    }
+    t_range = ttt - tvec.x[0]
+    if (t_range <= 0) { return -9999 }
+    return cs_med / t_range
+}
+
+// ============================================================
+// calc_pearson(): correlacion de Pearson entre voltajes
+// ============================================================
+func calc_pearson() { local j, mean0, mean1, sum0, sum1, num, den0, den1
+    sum0 = 0   sum1 = 0
+    for j = 0, tvec.size()-1 {
+        sum0 = sum0 + vvec[0].x[j]
+        sum1 = sum1 + vvec[1].x[j]
+    }
+    mean0 = sum0 / tvec.size()
+    mean1 = sum1 / tvec.size()
+    num = 0   den0 = 0   den1 = 0
+    for j = 0, tvec.size()-1 {
+        num  = num  + (vvec[0].x[j]-mean0)*(vvec[1].x[j]-mean1)
+        den0 = den0 + (vvec[0].x[j]-mean0)*(vvec[0].x[j]-mean0)
+        den1 = den1 + (vvec[1].x[j]-mean1)*(vvec[1].x[j]-mean1)
+    }
+    if (den0 <= 0 || den1 <= 0) { return 0 }
+    return num / sqrt(den0 * den1)
+}
+
+// ============================================================
+// calc_corr_seno(): correlacion seno de fase
+// ============================================================
+func calc_corr_seno() { local j, tin_idx, tfin_idx, sum, dt, t_range, dphi
+    tin_idx  = tvec.indwhere(">=", spike_times[0].x[1])
+    tfin_idx = tvec.indwhere(">=", spike_times[0].x[spike_times[0].size()-2])
+    if (tin_idx  < 0) { tin_idx  = 0 }
+    if (tfin_idx < 0) { tfin_idx = tvec.size()-1 }
+    t_range = tvec.x[tfin_idx] - tvec.x[tin_idx]
+    if (t_range <= 0) { return -9999 }
+    sum = 0
+    dt  = tvec.x[1] - tvec.x[0]
+    for j = tin_idx, tfin_idx-1 {
+        if (phi[0].x[j] >= 0 && phi[1].x[j] >= 0) {
+            dphi = phi[1].x[j] - phi[0].x[j]
+            sum  = sum + sin(dphi) * dt
+        }
+    }
+    return sum / t_range
+}
+
+// ============================================================
+// test_ws_por_freq()
+// ============================================================
+proc test_ws_por_freq() { local freq_test, ws_test, spk, cval, best_c, best_ws
+    print "=== TEST ws optimo por frecuencia ==="
+    tstop_diag = 2000
+    wi = 0
+
+    freq_test = 10
+    while (freq_test <= 100) {
+        FreqInp  = freq_test
+        ws_test  = 1e-4
+        best_c   = -9999
+        best_ws  = -1
+
+        while (ws_test <= 1e-1) {
+            ws  = ws_test
+            spk = run_sim_clean()
+
+            if (spk >= 5) {
+                calc_phase()        // necesario antes de calc_corr()
+                cval = calc_corr()
+                print "  freq=", freq_test, " Hz  ws=", ws_test, \
+                      "  spikes0=", spike_times[0].size(), \
+                      "  C1=", cval
+
+                if (cval > best_c) {
+                    best_c  = cval
+                    best_ws = ws_test
+                }
+            } else {
+                print "  freq=", freq_test, " Hz  ws=", ws_test, " -> sin spikes suficientes"
+            }
+            ws_test = ws_test * 2
+        }
+
+        if (best_ws > 0) {
+            print "  >>> OPTIMO freq=", freq_test, " Hz: ws=", best_ws, \
+                  "  C1_max=", best_c
+        } else {
+            print "  >>> freq=", freq_test, " Hz: SIN SPIKES en ningun ws"
+        }
+        print ""
+        freq_test += 10
+    }
+    tstop_diag = 5000
+}
+
+// ============================================================
+// freq_diagram(): barrido FreqInp vs wi  ->  frecuencia de salida
+//   (analogo a freq_diagram() de IClamp pero con NetStim)
+//
+// Para cada FreqInp:
+//   - PASO 1: wi = 0  ->  f_in_0, f_in_1   (frecuencia de salida sin inhibicion,
+//             que es la respuesta natural de cada soma a la entrada NetStim).
+//   - PASO 2: barrido en wi  ->  f_out_0, f_out_1.
+//
+// Salida: FreqInp f_in_0 f_in_1 wi f_out_0 f_out_1
+// ============================================================
+proc freq_diagram() { local wi_val, freq_val, min_spk, \
+                           f_in_0, f_in_1, f_out_0, f_out_1
+    freq_min  = 52
+    freq_max  = 60
+    freq_step = 2          // mismo paso fino que phase_diagram_compare
+
+    wi_min    = 1e-6
+    wi_max    = 8e-5
+    wi_step   = 1e-6
+
+    ws         = 0.0002
+    tstop_diag = 3000
+
+    sprint(new_file, "FreqIn_vs_FreqOut_NetStim_ws%g_delay%g_tau2%g_therm%d_amplio_2.txt", \
+           ws, delay, synA[0].tau2, t_therm)
+    corr_out = new File()
+    corr_out.wopen(new_file)
+    corr_out.printf("# ws_fijo=%.4g  delay=%.4g  noise=%.4g  t_therm=%d\n", \
+                    ws, delay, ns.noise, t_therm)
+    corr_out.printf("# FreqInp[Hz]  f_in_0[Hz]  f_in_1[Hz]  wi  f_out_0[Hz]  f_out_1[Hz]\n")
+    print "Guardando en: ", new_file
+
+    freq_val = freq_min
+    while (freq_val <= freq_max + freq_step/2) {
+        FreqInp = freq_val
+
+        // --- PASO 1: frecuencias de salida sin inhibicion (wi = 0) ---
+        wi = 0
+        min_spk = run_sim_clean()
+
+        f_in_0 = 0
+        f_in_1 = 0
+        if (spike_times[0].size() >= 2) {
+            f_in_0 = (spike_times[0].size()-1) \
+                   / (spike_times[0].x[spike_times[0].size()-1] \
+                      - spike_times[0].x[0]) * 1000
+        }
+        if (spike_times[1].size() >= 2) {
+            f_in_1 = (spike_times[1].size()-1) \
+                   / (spike_times[1].x[spike_times[1].size()-1] \
+                      - spike_times[1].x[0]) * 1000
+        }
+        print "FreqInp=", freq_val, " Hz", \
+              "  f_in_0=", f_in_0, " Hz", \
+              "  f_in_1=", f_in_1, " Hz"
+
+        wi_val = wi_min
+        while (wi_val <= wi_max + wi_step/2) {
+            wi = wi_val
+            min_spk = run_sim_clean()
+
+            f_out_0 = 0
+            f_out_1 = 0
+            if (spike_times[0].size() >= 2) {
+                f_out_0 = (spike_times[0].size()-1)/ (spike_times[0].x[spike_times[0].size()-1] - spike_times[0].x[0]) * 1000
+            }
+            if (spike_times[1].size() >= 2) {
+                f_out_1 = (spike_times[1].size()-1) / (spike_times[1].x[spike_times[1].size()-1]- spike_times[1].x[0]) * 1000
+            }
+
+            print "  wi=", wi_val, \
+                  "  f_out_0=", f_out_0, " Hz", \
+                  "  f_out_1=", f_out_1, " Hz"
+
+            corr_out.printf("%.6g %.6g %.6g %.6g %.6g %.6g\n", \
+                freq_val, f_in_0, f_in_1, wi_val, f_out_0, f_out_1)
+
+            wi_val += wi_step
+        }
+        corr_out.printf("\n")
+        freq_val += freq_step
+    }
+    corr_out.close()
+    printf("Guardado en %s\n", new_file)
+}
+
+
+
+// ============================================================
+// phase_diagram_compare(): barrido FreqInp vs wi (ws fijo)
+// ============================================================
+proc phase_diagram_compare() { local wi_val, freq_val, k, n, min_spk, \
+    csum1, csum2, csum3, csum4, \
+    csum1_sq, csum2_sq, csum3_sq, csum4_sq, \
+    cval1, cval2, cval3, cval4, \
+    sigma1, sigma2, sigma3, sigma4, \
+    Nexp_actual, cv, c2, cp, cs
+
+    freq_min  = 40
+    freq_max  = 60
+    freq_step = 1
+    wi_min    = 1e-5
+    wi_max    = 5e-5
+    wi_step   = 1e-6
+
+    ws = 0.0002
+    tstop_diag = 4000
+    Nexp       = 1
+
+    // Nombre de archivo incluye t_therm para trazabilidad
+    sprint(new_file, "Correlacion_freq_vs_wi_ws%g_delay%g_tau2%g_Termalizacion_%d_nsnoise_%d_Simulacion_wiCritico.txt", \
+           ws, delay, synA[0].tau2, t_therm, ns.noise)
+    corr_out = new File()
+    corr_out.wopen(new_file)
+    corr_out.printf("# ws_fijo=%.4g  delay=%.4g  noise=%.4g  t_therm=%d\n", \
+                    ws, delay, ns.noise, t_therm)
+    corr_out.printf("# Col: freq  wi  C1  sC1  C2N  sC2N  Pearson  sPearson  Cseno  sCseno\n")
+    print "Guardando en: ", new_file
+    print "ws fijo = ", ws
+
+    freq_val = freq_min
+    while (freq_val <= freq_max + freq_step/2) {
+        FreqInp = freq_val
+        print ">>> FreqInp =", freq_val, "Hz"
+
+        wi_val = wi_min
+        while (wi_val <= wi_max + wi_step/2) {
+            wi = wi_val
+            min_spk = run_sim_clean()
+            print "  wi=", wi_val, \
+                  " spikes0=", spike_times[0].size(), \
+                  " spikes1=", spike_times[1].size(), " (post-therm)"
+
+            cval1=0  cval2=0  cval3=0  cval4=0
+            sigma1=0  sigma2=0  sigma3=0  sigma4=0
+            Nexp_actual = 0
+
+            if (min_spk >= 5) {
+                csum1=0  csum2=0  csum3=0  csum4=0
+                csum1_sq=0  csum2_sq=0  csum3_sq=0  csum4_sq=0
+                for n = 1, Nexp {
+                    min_spk = run_sim_clean()
+                    if (min_spk >= 5) {
+                        c2 = calc_corr_2_N()
+                        calc_phase()
+                        cv = calc_corr()
+                        //cp = calc_pearson()
+                        //cs = calc_corr_seno()
+                        csum1    += cv    csum1_sq += cv*cv
+                        csum2    += c2    csum2_sq += c2*c2
+                        //csum3    += cp    csum3_sq += cp*cp
+                        //csum4    += cs    csum4_sq += cs*cs
+                        Nexp_actual += 1
+                    } else {
+                        print "  realiz=", n, " SIN SPIKES suficientes"
+                    }
+                }
+                if (Nexp_actual > 0) {
+                    cval1 = csum1/Nexp_actual
+                    cval2 = csum2/Nexp_actual
+                    //cval3 = csum3/Nexp_actual
+                    //cval4 = csum4/Nexp_actual
+                    if (Nexp_actual > 1) {
+                        sigma1 = sqrt((csum1_sq/Nexp_actual - cval1*cval1)*Nexp_actual/(Nexp_actual-1))
+                        sigma2 = sqrt((csum2_sq/Nexp_actual - cval2*cval2)*Nexp_actual/(Nexp_actual-1))
+                        //sigma3 = sqrt((csum3_sq/Nexp_actual - cval3*cval3)*Nexp_actual/(Nexp_actual-1))
+                        //sigma4 = sqrt((csum4_sq/Nexp_actual - cval4*cval4)*Nexp_actual/(Nexp_actual-1))
+                    }
+                    print "  -> C1 = ", cval1, " C2N = ", cval2, " P = ", cval3, " Cs = ", cval4
+                }
+            } else {
+                print "  SIN SPIKES: freq = ", freq_val, " wi = ", wi_val
+            }
+
+            corr_out.printf("%.6g\t%.6g\t%.6g\t%.6g\t%.6g\t%.6g\t%.6g\t%.6g\t%.6g\t%.6g\n", \
+                freq_val, wi_val, \
+                cval1, sigma1, cval2, sigma2, \
+                cval3, sigma3, cval4, sigma4)
+
+            wi_val += wi_step
+        }
+        corr_out.printf("\n")
+        freq_val += freq_step
+    }
+    corr_out.close()
+    printf("Guardado en %s\n", new_file)
+}
+// ============================================================
+// snippet_barrido_tau_netstim.hoc
+// ------------------------------------------------------------
+// Anadir al final de 2cells_sinc_NetStim_clean.hoc.
+//
+// Barrido de tau1 y tau2 de la sinapsis EXCITATORIA (synA, Exp2Syn).
+// Para cada combinacion (tau1, tau2):
+//   - Fija FreqInp = 50 Hz (resonancia T = delay)
+//   - Hace barrido 1D en wi
+//   - Calcula <C> con calc_corr y calc_corr_2_N
+//   - Guarda fichero independiente
+//
+// IMPORTANTE: tau1 y tau2 aqui se refieren a la sinapsis EXCITATORIA
+// (synA, Exp2Syn). Si lo que quieres es la sinapsis INHIBITORIA
+// (syni, ExpSyn), reemplaza synA[k] por syni[k] y solo modifica .tau
+// (ExpSyn solo tiene un tau).
+//
+// Tiempo estimado: 6 combinaciones x ~50 wi x ~5s/sim = ~25 min.
+// ============================================================
+
+// ============================================================
+// barrido_tau_run(tau1, tau2):
+//   Para los valores actuales de FreqInp, ws, t_therm, etc.,
+//   hace el barrido en wi y guarda un fichero con sufijo (tau1, tau2).
+// ============================================================
+proc barrido_tau_run() { local t1, t2, wi_val, min_spk, cv, c2   localobj fout
+    t1 = $1
+    t2 = $2
+
+    // Aplicar tau1 y tau2 a synA (Exp2Syn excitatoria)
+    synA[0].tau1 = t1
+    synA[0].tau2 = t2
+    synA[1].tau1 = t1
+    synA[1].tau2 = t2
+
+    sprint(new_file, "Correlacion_wi_NetStim_FreqInp%g_ws%g_delay%g_tau1_%g_tau2_%g_therm%d.txt", \
+           FreqInp, ws, delay, t1, t2, t_therm)
+    fout = new File()
+    fout.wopen(new_file)
+    fout.printf("# FreqInp=%g  ws=%g  delay=%g  tau1=%g  tau2=%g  t_therm=%d\n", \
+                FreqInp, ws, delay, t1, t2, t_therm)
+    fout.printf("# wi  C1  C2N\n")
+    print "==> ", new_file
+
+    wi_val = wi_min
+    while (wi_val <= wi_max + wi_step/2) {
+        wi = wi_val
+        min_spk = run_sim_clean()
+
+        cv = 0
+        c2 = 0
+        if (min_spk >= 5) {
+            c2 = calc_corr_2_N()
+            calc_phase()
+            cv = calc_corr()
+        }
+        fout.printf("%.6g\t%.6g\t%.6g\n", wi_val, cv, c2)
+        print "  tau1=", t1, " tau2=", t2, "  wi=", wi_val, "  C2N=", c2
+
+        wi_val += wi_step
+    }
+    fout.close()
+    printf("Guardado: %s\n", new_file)
+}
+
+// ============================================================
+// barrido_tau():
+//   Driver. Recorre las combinaciones (tau1, tau2) que quieras
+//   estudiar. EDITA las llamadas a barrido_tau_run() segun tu
+//   barrido. La configuracion fija es:
+//     FreqInp = 50 Hz (resonancia)
+//     ws = 0.0002
+//     wi en [0, 1e-4] paso 2e-6
+// ============================================================
+proc barrido_tau() {
+    // Configuracion fija
+    FreqInp    = 50         // RESONANCIA T = delay
+    ws         = 0.0002
+    tstop_diag = 4000
+    wi_min     = 0
+    wi_max     = 1e-4
+    wi_step    = 2e-6
+
+    // tau1 fijo (0.5 ms = original), variamos tau2
+    barrido_tau_run(0.5,  5)
+    barrido_tau_run(0.5, 10)   // original
+    barrido_tau_run(0.5, 20)
+    barrido_tau_run(0.5, 50)
+
+    // tau2 fijo (10 ms = original), variamos tau1
+    barrido_tau_run(0.1, 10)
+    // barrido_tau_run(0.5, 10) ya hecho arriba
+    barrido_tau_run(2.0, 10)
+}
+
+// ============================================================
+// snippet_barrido_tauinh_netstim.hoc
+// ------------------------------------------------------------
+// Anadir al final de 2cells_sinc_NetStim_clean.hoc.
+//
+// Barrido del tau de la sinapsis INHIBITORIA (syni, ExpSyn).
+// Para cada valor de tau_inh:
+//   - Fija FreqInp = 50 Hz (resonancia T = delay)
+//   - Fija synA con tau1 = 0.5, tau2 = 10 (original)
+//   - Hace barrido 1D en wi
+//   - Calcula <C> con calc_corr y calc_corr_2_N
+//   - Guarda fichero independiente
+//
+// La sinapsis inhibitoria es ExpSyn -> solo tiene UN tau.
+// Original: syni[k].tau = 30 ms.
+//
+// Tiempo estimado: 6 valores x ~50 wi x ~5s/sim = ~25 min.
+// ============================================================
+
+proc barrido_tauinh_run() { local tau_inh, wi_val, min_spk, cv, c2   localobj fout
+    tau_inh = $1
+
+    // Aplicar tau a la sinapsis INHIBITORIA
+    syni[0].tau = tau_inh
+    syni[1].tau = tau_inh
+
+    // Restaurar tau excitatorio original por si acaso
+    synA[0].tau1 = 0.5
+    synA[0].tau2 = 10
+    synA[1].tau1 = 0.5
+    synA[1].tau2 = 10
+
+    sprint(new_file, "Correlacion_wi_NetStim_FreqInp%g_ws%g_delay%g_tauinh_%g_therm%d.txt", \
+           FreqInp, ws, delay, tau_inh, t_therm)
+    fout = new File()
+    fout.wopen(new_file)
+    fout.printf("# FreqInp=%g  ws=%g  delay=%g  tau_inh=%g  t_therm=%d\n", \
+                FreqInp, ws, delay, tau_inh, t_therm)
+    fout.printf("# wi  C1  C2N\n")
+    print "==> ", new_file
+
+    wi_val = wi_min
+    while (wi_val <= wi_max + wi_step/2) {
+        wi = wi_val
+        min_spk = run_sim_clean()
+
+        cv = 0
+        c2 = 0
+        if (min_spk >= 5) {
+            c2 = calc_corr_2_N()
+            calc_phase()
+            cv = calc_corr()
+        }
+        fout.printf("%.6g\t%.6g\t%.6g\n", wi_val, cv, c2)
+        print "  tau_inh=", tau_inh, "  wi=", wi_val, "  C2N=", c2
+
+        wi_val += wi_step
+    }
+    fout.close()
+    printf("Guardado: %s\n", new_file)
+}
+
+proc barrido_tauinh() {
+    // Configuracion fija
+    FreqInp    = 50            // RESONANCIA T = delay
+    ws         = 0.0002
+    tstop_diag = 4000
+    wi_min     = 0
+    wi_max     = 1e-4
+    wi_step    = 2e-6
+
+    // Barrido de tau_inh (ms). Original: 30 ms.
+    barrido_tauinh_run(5)
+    barrido_tauinh_run(10)
+    barrido_tauinh_run(20)
+    barrido_tauinh_run(30)       // original
+    barrido_tauinh_run(50)
+    barrido_tauinh_run(100)
+}
+
+
+//load_file("Ses_2c_sinc.ses")
+
+tvec = new Vector()
+tvec.record(&t)
+
+for k = 0, 1 {
+    vvec[k] = new Vector()
+    soma[k] vvec[k].record(&v(0.5))
+}
+sprint(new_file, "Trayectorias_freq_%d_wi_%g.txt", FreqInp, wi)
+fv = new File()
+fv.wopen(new_file)
+fv.printf("# t    soma[0].v, soma[1].v  \n")
+
+ns.start = 0   // termaliza desde el inicio en la pasada de GUI tambien
+tstop = t_therm + 1000
+
+run()
+fv.close()
+
+tstop_diag = 5000
+
+//test_ws_por_freq()
+//phase_diagram_compare()
+//trayectorias_fluctuaciones()
+//freq_diagram()
+//barrido_tau()
+//barrido_tauinh()
+//run_sim_clean()

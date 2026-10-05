@@ -1,0 +1,453 @@
+// ============================================================
+// Arbol6_arnold_rasters_d140.hoc
+// ------------------------------------------------------------
+// Barrido en frecuencia para cuatro distancias:
+//   d1 = 140, 170, 200 y 250 um
+//
+// Parametros:
+//   d0 = 100 um
+//   wi = 5e-4 uS
+//   ws_total = 0.0016 uS por celula
+//   Fin = 20 ... 80 Hz, paso 2.5 Hz
+//
+// IMPORTANTE:
+//   d1 = 140 um no es alcanzable en la fila superior (row=2),
+//   que comienza a 150 um del soma. Por ello:
+//      - d1 = 140 um -> N1 usa row=0 (ramas inferiores)
+//      - d1 >= 170 um -> N1 usa row=2 (ramas superiores)
+//   N0 permanece siempre en row=0 con d0=100 um.
+//
+// Salida principal:
+//   Arbol6_arnold_d140_170_200_250_wi0.0005.txt
+//
+// Columnas:
+//   d1_um  FreqInp_Hz  f0_Hz  f1_Hz  C  f0/Fin  f1/Fin
+// ============================================================
+
+load_file("nrngui.hoc")
+load_file("Arbol6_morfologia.hoc")
+
+cvode_active(1)
+cvode.atol(1e-5)
+
+celsius = 34
+v_init = -65
+PI = 3.141592653589793
+
+// -------------------- Parametros fijos --------------------
+d0 = 100
+d1 = 130
+
+ws_total = 0.0016
+t_therm = 500
+tstop_diag = 2000
+
+wi_fix = 0.0005
+wi = wi_fix
+
+FreqInp = 50
+
+// -------------------- Barrido en frecuencia -------------
+Nd1 = 2
+double D1LIST[2]
+
+D1LIST[0] = 130
+D1LIST[1] = 150
+
+
+Fin_min = 20
+Fin_max = 80
+Fin_step = 2.5
+
+// Fila usada por N1:
+// 0 = inferior
+// 2 = superior
+row1 = 0
+
+// -------------------- Objetos ----------------------------
+objref cell[2], exc[2][2], nexc[2][2]
+objref inh[2], ni[2], ns
+objref spike_times[2], spike_rec[2], nil
+objref tv, vv[2]
+objref arnold, raster
+
+strdef fname
+
+// -------------------- Crear neuronas ---------------------
+for k = 0,1 {
+    cell[k] = new Arbol6()
+}
+
+// N0 siempre: d0=100 um, fila inferior
+cell[0].configure(-180, 0, d0)
+
+// Estado inicial: d1=140 um -> fila inferior
+cell[1].configure(180, 0, d1)
+
+// -------------------- NetStim ----------------------------
+ns = new NetStim()
+{
+    ns.start = 0
+    ns.interval = 1000/FreqInp
+    ns.number = 1e9
+    ns.noise = 0
+}
+
+// -------------------- Inhibicion reciproca ---------------
+for k = 0,1 {
+    cell[k].soma {
+        inh[k] = new ExpSyn(0.5)
+        inh[k].tau = 30
+        inh[k].e = -80
+
+        spike_times[k] = new Vector()
+
+        spike_rec[k] = new NetCon(&v(0.5), nil, 0, 0, 0)
+        spike_rec[k].record(spike_times[k])
+    }
+}
+
+cell[0].soma ni[0] = new NetCon(&v(0.5), inh[1], 0, 0, wi)
+cell[1].soma ni[1] = new NetCon(&v(0.5), inh[0], 0, 0, wi)
+
+
+// ============================================================
+// COLOCAR SINAPSIS
+//
+// N0:
+//   siempre row=0, branches 0 y 1, d0=100 um.
+//
+// N1:
+//   d1=140 um -> row=0, branches 0 y 1.
+//   d1>=170 um -> row=2, branches 4 y 5.
+// ============================================================
+proc colocar_sinapsis() { local k, j, b, actual
+
+    // Eliminar referencias anteriores
+    for k = 0,1 {
+        for j = 0,1 {
+            nexc[k][j] = nil
+            exc[k][j] = nil
+        }
+    }
+
+    // N0 siempre en fila inferior
+    cell[0].configure(-180, 0, d0)
+
+    // Seleccionar automaticamente la fila de N1
+    if (d1 < 150) {
+        row1 = 0
+    } else {
+        row1 = 2
+    }
+
+    cell[1].configure(180, row1, d1)
+
+    for k = 0,1 {
+
+        cell[k].soma distance(0, 0.5)
+
+        for j = 0,1 {
+
+            // Seleccion de ramas
+            if (k == 0) {
+                // N0: fila inferior
+                b = j
+            } else {
+                if (row1 == 0) {
+                    // N1, d1=140: fila inferior
+                    b = j
+                } else {
+                    // N1, d1>=170: fila superior
+                    b = 4 + j
+                }
+            }
+
+            cell[k].branch[b] {
+                exc[k][j] = new Exp2Syn(1)
+                actual = distance(1)
+            }
+
+            // Comprobacion de que la distancia recorrida es la pedida
+            if (abs(actual - cell[k].target_distance) > 0.001) {
+                printf("ERROR distancia: cell=%d d1=%g row=%g branch=%d actual=%g target=%g\n", \
+                       k, d1, row1, b, actual, cell[k].target_distance)
+                execerror("Incorrect path distance", "")
+            }
+
+            exc[k][j].tau1 = 0.5
+            exc[k][j].tau2 = 10
+            exc[k][j].e = 0
+
+            nexc[k][j] = new NetCon(ns, exc[k][j], 0, 0, ws_total/2)
+        }
+    }
+}
+
+colocar_sinapsis()
+
+
+// ============================================================
+// EJECUTAR SIMULACION Y ELIMINAR TRANSITORIO
+// ============================================================
+proc run_sim_clean() { local k, idx
+
+    ni[0].weight[0] = wi
+    ni[1].weight[0] = wi
+
+    ns.interval = 1000/FreqInp
+
+    tv = new Vector()
+    tv.record(&t, 0.1)
+
+    for k = 0,1 {
+        vv[k] = new Vector()
+        cell[k].soma vv[k].record(&v(0.5), 0.1)
+    }
+
+    tstop = t_therm + tstop_diag
+    run()
+
+    for k = 0,1 {
+
+        idx = spike_times[k].indwhere(">=", t_therm)
+
+        if (idx < 0) {
+            spike_times[k].resize(0)
+        } else {
+            if (idx > 0) {
+                spike_times[k].remove(0, idx-1)
+            }
+        }
+
+        idx = spike_times[k].indwhere(">=", tstop)
+
+        if (idx >= 0) {
+            spike_times[k].resize(idx)
+        }
+    }
+}
+
+
+// ============================================================
+// CORRELACION DE FASE
+// <cos(phi1-phi0)> con interpolacion lineal entre spikes.
+// ============================================================
+corr_duration = 0
+
+func calc_corr_2_N() { local i,j,a,b,e0,e1,left,right,p0,p1,w,delta,area
+
+    corr_duration = 0
+
+    if (spike_times[0].size() < 2 || spike_times[1].size() < 2) {
+        return -9999
+    }
+
+    a = spike_times[0].x[0]
+    if (spike_times[1].x[0] > a) {
+        a = spike_times[1].x[0]
+    }
+
+    b = spike_times[0].x[spike_times[0].size()-1]
+    if (spike_times[1].x[spike_times[1].size()-1] < b) {
+        b = spike_times[1].x[spike_times[1].size()-1]
+    }
+
+    if (b <= a) {
+        return -9999
+    }
+
+    i = 0
+    j = 0
+    area = 0
+    left = a
+
+    while (left < b - 1e-10) {
+
+        while (spike_times[0].x[i+1] <= left && \
+               i < spike_times[0].size()-2) {
+            i += 1
+        }
+
+        while (spike_times[1].x[j+1] <= left && \
+               j < spike_times[1].size()-2) {
+            j += 1
+        }
+
+        e0 = spike_times[0].x[i+1]
+        e1 = spike_times[1].x[j+1]
+
+        right = e0
+        if (e1 < right) {
+            right = e1
+        }
+        if (b < right) {
+            right = b
+        }
+
+        p0 = 2*PI/(e0 - spike_times[0].x[i])
+        p1 = 2*PI/(e1 - spike_times[1].x[j])
+
+        delta = p1*(left - spike_times[1].x[j]) \
+              - p0*(left - spike_times[0].x[i])
+
+        w = p1 - p0
+
+        if (abs(w) < 1e-8) {
+            area += cos(delta)*(right-left)
+        } else {
+            area += (sin(delta+w*(right-left))-sin(delta))/w
+        }
+
+        left = right
+    }
+
+    corr_duration = b-a
+    return area/corr_duration
+}
+
+
+// ============================================================
+// BARRIDO EN FRECUENCIA
+//
+// Para cada:
+//   d1 = 140,170,200,250 um
+//
+// barre:
+//   Fin = 20 ... 80 Hz
+//
+// con:
+//   wi = 5e-4 uS
+//
+// Salida:
+//   d1  Fin  f0  f1  C  f0/Fin  f1/Fin
+// ============================================================
+proc barrido_arnold() { local id, ifin, c, f0, f1, nfin, dur_s
+
+    arnold = new File()
+
+    sprint(fname, "Arbol6_arnold_d130_150_wi%g.txt", wi_fix)
+    arnold.wopen(fname)
+
+    arnold.printf("# Barrido en frecuencia Arbol6\n")
+    arnold.printf("# d1 = {140,170,200,250} um\n")
+    arnold.printf("# d1=140 usa row=0; d1>=170 usa row=2\n")
+    arnold.printf("# wi_fix=%g uS  d0=%g um  ws_total=%g uS  duration=%g ms\n", \
+                  wi_fix, d0, ws_total, tstop_diag)
+
+    arnold.printf("# d1_um  FreqInp_Hz  f0_Hz  f1_Hz  C  ratio_f0_Fin  ratio_f1_Fin\n")
+
+    wi = wi_fix
+
+    nfin = int((Fin_max-Fin_min)/Fin_step + 1e-6)
+    dur_s = tstop_diag/1000
+
+    for id = 0, Nd1-1 {
+
+        d1 = D1LIST[id]
+        colocar_sinapsis()
+
+        printf("\n")
+        printf("============================================\n")
+        printf(" d1=%g um   row N1=%g   wi=%g uS\n", d1, row1, wi)
+        printf("============================================\n")
+
+        for ifin = 0, nfin {
+
+            FreqInp = Fin_min + ifin*Fin_step
+
+            run_sim_clean()
+
+            c = calc_corr_2_N()
+
+            f0 = spike_times[0].size()/dur_s
+            f1 = spike_times[1].size()/dur_s
+
+            arnold.printf("%g\t%g\t%.4f\t%.4f\t%.6f\t%.4f\t%.4f\n", \
+                          d1, FreqInp, f0, f1, c, \
+                          f0/FreqInp, f1/FreqInp)
+
+            arnold.flush()
+
+            printf(" Fin=%5.1f Hz  f0=%7.2f  f1=%7.2f  C=% .4f  ratios=(%.3f, %.3f)\n", \
+                   FreqInp, f0, f1, c, \
+                   f0/FreqInp, f1/FreqInp)
+        }
+
+        arnold.printf("\n")
+    }
+
+    arnold.close()
+
+    printf("\n[ok] datos guardados en: %s\n", fname)
+}
+
+
+// ============================================================
+// RASTERS A Fin=50 Hz
+// Opcional, pero se conservan por compatibilidad con el script
+// original.
+// ============================================================
+proc guardar_rasters() { local pt, k, i
+
+    FreqInp = 50
+    wi = wi_fix
+
+    for pt = 0, Nd1-1 {
+
+        d1 = D1LIST[pt]
+        colocar_sinapsis()
+        run_sim_clean()
+
+        raster = new File()
+
+        sprint(fname, \
+          "Arbol6_raster_d1_%g_wi%g_Fin%g.txt", \
+          d1, wi, FreqInp)
+
+        raster.wopen(fname)
+
+        raster.printf("# raster d1=%g um row1=%g wi=%g uS Fin=%g Hz duration=%g ms\n", \
+                      d1, row1, wi, FreqInp, tstop_diag)
+
+        raster.printf("# cell  t_spike_ms\n")
+
+        for k = 0,1 {
+            for i = 0, spike_times[k].size()-1 {
+                raster.printf("%d\t%.4f\n", \
+                              k, spike_times[k].x[i])
+            }
+        }
+
+        raster.close()
+
+        printf("[ok] raster d1=%g row=%g spk0=%d spk1=%d -> %s\n", \
+               d1, row1, \
+               spike_times[0].size(), \
+               spike_times[1].size(), fname)
+    }
+}
+
+
+// ============================================================
+// LANZAMIENTO
+// ============================================================
+print ""
+print "=================================================="
+print " Arbol6: barrido en frecuencia"
+print " d1 = 140, 170, 200, 250 um"
+print " wi_fix = ", wi_fix, " uS"
+print " Fin = 20 - 80 Hz, paso 2.5 Hz"
+print " d1=140 -> row inferior"
+print " d1>=170 -> row superior"
+print "=================================================="
+
+barrido_arnold()
+
+// Descomenta esta linea si tambien quieres regenerar los rasters:
+// guardar_rasters()
+
+print ""
+print "TERMINADO."
+print "Salida principal:"
+print "  Arbol6_arnold_d140_170_200_250_wi0.0005.txt"

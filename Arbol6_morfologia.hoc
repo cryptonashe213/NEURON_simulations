@@ -1,0 +1,57 @@
+// Six lateral branches in three symmetric rows at 45 degrees.
+// Each branch has two cable sections meeting EXACTLY at the synaptic site.
+// Splitting avoids moving the synapse to a segment centre during discretization.
+begintemplate Arbol6
+public soma, trunk, branch, tip, all, configure, xpos, target_distance
+create soma, trunk[4], branch[6], tip[6]
+objref all
+proc init() { local i
+    all = new SectionList()
+    soma all.append()
+    for i=0,3 trunk[i] all.append()
+    for i=0,5 { branch[i] all.append() tip[i] all.append() }
+    connect trunk[0](0), soma(0.5)
+    for i=1,3 connect trunk[i](0), trunk[i-1](1)
+    for i=0,5 {
+        connect branch[i](0), trunk[int(i/2)](1)
+        connect tip[i](0), branch[i](1)
+    }
+    forsec all {
+        Ra=100 cm=1
+        insert pas g_pas=0.0001 e_pas=-65
+        insert nax gbar_nax=0.04
+        insert kdr gkdrbar_kdr=0.04
+        ena=55 ek=-90
+    }
+}
+// configure(horizontal offset, stimulated row: 0 or 2, path distance in um)
+proc configure() { local i,row,side,y,a,b,q
+    xpos=$1 target_distance=$3 q=sqrt(0.5)
+    if ($3<=50*($2+1) || $3>=50*($2+1)+150) {
+        execerror("Synapse must lie strictly inside its lateral branch", "")
+    }
+    soma {
+        pt3dclear() pt3dadd(xpos,-2.5,0,5) pt3dadd(xpos,2.5,0,5)
+        nseg=1
+    }
+    for i=0,3 trunk[i] {
+        pt3dclear() pt3dadd(xpos,50*i,0,2) pt3dadd(xpos,50*(i+1),0,2)
+        nseg=11
+    }
+    for i=0,5 {
+        row=int(i/2) side=2*(i%2)-1 y=50*(row+1)
+        a=75
+        if (row==$2) { a=$3-y }
+        b=150-a
+        branch[i] {
+            pt3dclear() pt3dadd(xpos,y,0,1) pt3dadd(xpos+side*a*q,y+a*q,0,1)
+            nseg=2*int(a/10)+1
+        }
+        tip[i] {
+            pt3dclear() pt3dadd(xpos+side*a*q,y+a*q,0,1)
+            pt3dadd(xpos+side*150*q,y+150*q,0,1)
+            nseg=2*int(b/10)+1
+        }
+    }
+}
+endtemplate Arbol6

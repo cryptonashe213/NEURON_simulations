@@ -1,0 +1,9 @@
+create soma[2]            //rete di 2 neuroni, la cui geometria è data da pt3dadd
+ soma[0] {pt3dclear()
+   pt3dadd(-17.5,0,0,5)   //x,y,z,diametro in um
+   pt3dadd(-12.5,0,0,5)
+ }
+ soma[1] {pt3dclear()
+   pt3dadd(-2.5,0,0,5)
+   pt3dadd(2.5,0,0,5)
+ }
