@@ -1,0 +1,33 @@
+load_file("nrngui.hoc")
+load_file("2cells.hoc")
+forall insert pas    // proprieta passive (R e C)
+forall insert kdr    // K+ --- per inserire i canali ionici, si devono compilare i ".mod" con nmknrdll
+forall insert nax    // Sodio
+forall g_pas=0.0001  // m siemens/cm^2   -> time constant 10 ms
+celsius = 34   //setta la temperatura 34=T fisiologica dei roditori. I canali ionici dipendonon da T
+objref syni[2],nci[2],ic[2]
+
+soma[0] { 
+syni[0] = new Exp2Syn(0.5)     // nuova sinapsi inibitoria
+syni[0].tau1 = 1           // costante di attivazione      (ms)
+syni[0].tau2 = 20          // costante di inattivazione (ms)
+syni[0].e    = -80         // sinapsi di tipo inibitorio
+ic[0] = new IClamp(0.5)    //clamp
+ic[0].dur = 1000
+ic[0].del = 50
+ic[0].amp = 0.001
+}
+
+soma[1] { 
+syni[1] = new Exp2Syn(0.5)     // nuova sinapsi inibitoria
+syni[1].tau1 = 1           // costante di attivazione      (ms)
+syni[1].tau2 = 20          // costante di inattivazione (ms)
+syni[1].e    = -80         // sinapsi di tipo inibitorio
+ic[1] = new IClamp(0.5)
+ic[1].dur = 1000
+ic[1].del = 80
+ic[1].amp = 0.001
+}
+soma[0] nci[0] = new NetCon(&v(.5),syni[1],0,0,1e-5)
+soma[1] nci[1] = new NetCon(&v(.5),syni[0],0,0,1e-5)
+load_file("Ses_2c_sinc.ses")
