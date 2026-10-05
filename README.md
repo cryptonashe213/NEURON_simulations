@@ -1,4 +1,4 @@
-## Full thesis
+## Full thesis in Spanish
 
 [Read the thesis online (PDF)](https://cryptonashe213.github.io/NEURON_simulations/TFG_Rub%C3%A9n_final.pdf)
 
