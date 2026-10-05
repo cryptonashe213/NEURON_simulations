@@ -180,8 +180,5 @@ print "Ready: diagnostico() or barrido_d1_wi()."
 // esas distancias). Los ya calculados: 175, 200, 225, 250.
 // Queda: 275.
 // -----------------------------------------------------------
-d1=275
-d1_min=275
-d1_max=275
 out_prefix="Arbol6_resultados_desde275_1rep"
 barrido_d1_wi()
